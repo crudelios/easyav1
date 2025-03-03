@@ -13,6 +13,8 @@
 #define VORBIS_HEADERS_COUNT 3
 #define DECODE_UNTIL_SKIP_MS 1000
 
+#define INVALID_TIMESTAMP ((easyav1_timestamp) -1)
+
 typedef enum {
     STREAM_TYPE_NONE = 0,
     STREAM_TYPE_FILE,
@@ -646,23 +648,37 @@ easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settin
  * Decoding functions
  */
 
-static int get_next_packet(easyav1_t *easyav1)
+static easyav1_timestamp get_next_packet(easyav1_t *easyav1)
 {
-    if (easyav1->webm.packet) {
-        return 1;
+    easyav1_timestamp timestamp = 0;
+
+    if (!easyav1->webm.packet) {
+        if (easyav1->is_finished) {
+            if (nestegg_duration(easyav1->webm.context, &timestamp)) {
+                log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get duration from webm context.");
+                return INVALID_TIMESTAMP;
+            }
+
+            return ns_to_ms(timestamp);
+        }
+    
+        int result = nestegg_read_packet(easyav1->webm.context, &easyav1->webm.packet);
+
+        if (result < 0) {
+            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to read packet from webm context.");
+            return INVALID_TIMESTAMP;
+        } else if (result == 0) {
+            easyav1->is_finished = 1;
+            log(EASYAV1_LOG_LEVEL_INFO, "End of stream.");
+        }
     }
 
-    int result = nestegg_read_packet(easyav1->webm.context, &easyav1->webm.packet);
-
-    if (result < 0) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to read packet from webm context");
-        return 0;
-    } else if (result == 0) {
-        easyav1->is_finished = 1;
-        log(EASYAV1_LOG_LEVEL_INFO, "End of stream");
+    if (nestegg_packet_tstamp(easyav1->webm.packet, &timestamp)) {
+        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get timestamp from packet.");
+        return INVALID_TIMESTAMP;
     }
 
-    return result;
+    return ns_to_ms(timestamp);
 }
 
 static void free_nothing(const uint8_t *data, void *cookie)
@@ -762,17 +778,19 @@ static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
         }
 
         if (pic.p.layout != DAV1D_PIXEL_LAYOUT_I420) {
-            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layou, ignoring frame");
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout, ignoring frame.");
             dav1d_picture_unref(&pic);
             continue;
         }
 
         if (easyav1->video.has_picture_to_output && easyav1->settings.skip_unprocessed_frames) {
-            log(EASYAV1_LOG_LEVEL_INFO, "Undisplayed frame still pending, discarding it");
+            log(EASYAV1_LOG_LEVEL_INFO, "Undisplayed frame for timestamp %lld still pending, discarding it",
+                easyav1->video.av1.pic.m.timestamp);
         }
 
         dav1d_picture_unref(&easyav1->video.av1.pic);
 
+        pic.m.timestamp = easyav1->timestamp;
         easyav1->video.av1.pic = pic;
         easyav1->video.has_picture_to_output = 1;
 
@@ -976,20 +994,7 @@ static void release_packet(easyav1_t *easyav1)
 
 static int decode_cycle(easyav1_t *easyav1)
 {
-    if (!get_next_packet(easyav1)) {
-        return 0;
-    }
-
     int packet_decoded = decode_packet(easyav1);
-
-    easyav1_timestamp current;
-
-    if (nestegg_packet_tstamp(easyav1->webm.packet, &current)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get timestamp from packet.");
-        return 0;
-    }
-
-    easyav1->timestamp = ns_to_ms(current);
 
     release_packet(easyav1);
 
@@ -1002,6 +1007,14 @@ int easyav1_decode_next(easyav1_t *easyav1)
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
         return 0;
     }
+
+    easyav1_timestamp timestamp = get_next_packet(easyav1);
+
+    if (timestamp == INVALID_TIMESTAMP) {
+        return 0;
+    }
+
+    easyav1->timestamp = timestamp;
 
     if (!decode_cycle(easyav1)) {
         return 0;
@@ -1024,23 +1037,6 @@ int easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
         return 1;
     }
 
-    if (!get_next_packet(easyav1)) {
-        return 0;
-    }
-
-    easyav1_timestamp current;
-
-    if (nestegg_packet_tstamp(easyav1->webm.packet, &current)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get timestamp from packet.");
-        return 0;
-    }
-
-    // Just update the timestamp if the packet is not yet at the requested timestamp
-    if (ns_to_ms(current) > easyav1->timestamp) {
-        easyav1->timestamp = timestamp;
-        return 1;
-    }
-
     // Skip to timestamp if too far behind
     if (timestamp - easyav1->timestamp > DECODE_UNTIL_SKIP_MS) {
         log(EASYAV1_LOG_LEVEL_INFO, "Decoder too far behind at %llu, skipping to requested timestamp %llu.",
@@ -1050,7 +1046,19 @@ int easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
         easyav1_seek_to_timestamp(easyav1, timestamp - 30);
     }
 
-    while (easyav1->timestamp <= timestamp) {
+    while (1) {
+        easyav1_timestamp current = get_next_packet(easyav1);
+
+        if (current == INVALID_TIMESTAMP) {
+            return 0;
+        }
+
+        if (current > timestamp) {
+            break;
+        }
+
+        easyav1->timestamp = current;
+
         if (!decode_cycle(easyav1)) {
             return 0;
         }
@@ -1168,13 +1176,22 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
         easyav1->audio.has_samples_in_buffer = 0;
     }
 
-    while (easyav1->seek != NOT_SEEKING) {
-        if (!decode_cycle(easyav1)) {
+    while (1) {
+        easyav1_timestamp current = get_next_packet(easyav1);
+
+        if (current == INVALID_TIMESTAMP) {
             return 0;
         }
 
+        easyav1->timestamp = current;
+
         if (easyav1->seek == SEEKING_FOR_TIMESTAMP && easyav1->timestamp >= timestamp) {
             easyav1->seek = NOT_SEEKING;
+            break;
+        }
+
+        if (!decode_cycle(easyav1)) {
+            return 0;
         }
     }
 
@@ -1417,11 +1434,14 @@ int easyav1_is_finished(const easyav1_t *easyav1)
 void easyav1_destroy(easyav1_t **handle)
 {
     easyav1_t *easyav1 = 0;
+
     if (!handle) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
         return;
     }
+
     easyav1 = *handle;
+
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
         return;
@@ -1430,6 +1450,7 @@ void easyav1_destroy(easyav1_t **handle)
     if (easyav1->video.has_picture_to_output) {
         dav1d_picture_unref(&easyav1->video.av1.pic);
     }
+
     if (easyav1->video.av1.context) {
         dav1d_close(&easyav1->video.av1.context);
     }
@@ -1438,9 +1459,12 @@ void easyav1_destroy(easyav1_t **handle)
     vorbis_dsp_clear(&easyav1->audio.vorbis.dsp);
     vorbis_info_clear(&easyav1->audio.vorbis.info);
     free(easyav1->audio.buffer);
+
     if (!easyav1->settings.interlace_audio) {
         free(easyav1->audio.frame.pcm.deinterlaced);
     }
+
+    release_packet(easyav1);
 
     if (easyav1->webm.context) {
         nestegg_destroy(easyav1->webm.context);

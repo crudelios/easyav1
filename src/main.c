@@ -106,11 +106,9 @@ static void audio_callback(const easyav1_audio_frame *frame, void *userdata)
 static int init_easyav1(const char *filename)
 {
     easyav1_settings settings = easyav1_default_settings();
-    settings.enable_audio = 0;
     settings.callbacks.video = video_callback;
     settings.callbacks.audio = audio_callback;
     settings.max_audio_samples = 2048;
- //   settings.log_level = EASYAV1_LOG_LEVEL_INFO;
     data.easyav1 = easyav1_init_from_filename(filename, &settings);
     if (!data.easyav1) {
         return 0;
@@ -319,28 +317,27 @@ static void init_ui(void)
 #endif
 }
 
-static unsigned int get_timestamp_width(easyav1_timestamp timestamp)
+static void get_timestamp_string(easyav1_timestamp timestamp, char *buffer, size_t size)
 {
-    char buffer[32];
     if (timestamp > 3600000) {
-        snprintf(buffer, sizeof(buffer), "%llu:%02llu:%02llu", timestamp / 3600000,
+        snprintf(buffer, size, "%lu:%02lu:%02lu", timestamp / 3600000,
             timestamp / 60000, (timestamp / 1000) % 60);
     } else {
-        snprintf(buffer, sizeof(buffer), "%llu:%02llu", timestamp / 60000, (timestamp / 1000) % 60);
+        snprintf(buffer, size, "%lu:%02lu", timestamp / 60000, (timestamp / 1000) % 60);
     }
+}
 
+static unsigned int get_timestamp_width(easyav1_timestamp timestamp)
+{
+    char buffer[36];
+    get_timestamp_string(timestamp, buffer, sizeof(buffer));
     return strlen(buffer) * (FONT_WIDTH + FONT_PADDING) - FONT_PADDING;
 }
 
 static void draw_timestamp(unsigned int x, unsigned int y, easyav1_timestamp timestamp)
 {
-    char buffer[32];
-    if (timestamp > 3600000) {
-        snprintf(buffer, sizeof(buffer), "%llu:%02llu:%02llu", timestamp / 3600000,
-            timestamp / 60000, (timestamp / 1000) % 60);
-    } else {
-        snprintf(buffer, sizeof(buffer), "%llu:%02llu", timestamp / 60000, (timestamp / 1000) % 60);
-    }
+    char buffer[36];
+    get_timestamp_string(timestamp, buffer, sizeof(buffer));
 
     for (size_t i = 0; i < sizeof(buffer) - 1; i++) {
         if (buffer[i] == '\0') {
@@ -378,10 +375,6 @@ static void handle_events(void)
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT || (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_ESCAPE)) {
             data.quit = 1;
-        }
-
-        if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-            //	glViewport(0, 0, ev.window.data1, ev.window.data2);
         }
 
         if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_RIGHT) {
