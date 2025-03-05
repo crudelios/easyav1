@@ -432,7 +432,10 @@ static void handle_input(void)
     if (data.mouse.pressed) {
         if (mouse_is_hovering_timestamp || (mouse_was_pressed && mouse_moved)) {
             SDL_ClearQueuedAudio(data.SDL.audio_device);
-            easyav1_seek_to_timestamp(data.easyav1, hovered_timestamp);
+            if (!easyav1_seek_to_timestamp(data.easyav1, hovered_timestamp)) {
+                printf("Failed to seek to timestamp %llu\n", hovered_timestamp);
+                return;
+            }
             data.got_video = 0;
             while (!data.got_video && !easyav1_is_finished(data.easyav1)) {
                 easyav1_decode_next(data.easyav1);

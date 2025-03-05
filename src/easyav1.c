@@ -25,7 +25,8 @@ typedef enum {
     NOT_SEEKING = 0,
     SEEKING_FOR_SQHDR = 1,
     SEEKING_FOR_KEYFRAME = 2,
-    SEEKING_FOR_TIMESTAMP = 3
+    SEEKING_FOUND_KEYFRAME = 3,
+    SEEKING_FOR_TIMESTAMP = 4
 } seeking_mode;
 
 typedef struct easyav1_t {
@@ -100,6 +101,7 @@ static const easyav1_settings DEFAULT_SETTINGS = {
     .video_track = 0,
     .audio_track = 0,
     .max_audio_samples = 4096,
+    .use_fast_seeking = 0,
     .log_level = EASYAV1_LOG_LEVEL_WARNING
 };
 
@@ -206,7 +208,11 @@ static int file_seek(int64_t offset, int origin, void *userdata)
     if (!f) {
         return -1;
     }
+#ifdef _WIN32
+    return _fseeki64(f, offset, origin);
+#else
     return fseek(f, offset, origin);
+#endif
 }
 
 static int64_t file_tell(void *userdata)
@@ -215,7 +221,11 @@ static int64_t file_tell(void *userdata)
     if (!f) {
         return -1;
     }
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
     return ftell(f);
+#endif
 }
 
 static int memory_read(void *buf, size_t size, void *userdata)
@@ -513,8 +523,7 @@ easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const e
         easyav1->settings = *settings;
     } else {
         easyav1->settings = DEFAULT_SETTINGS;
-        log(EASYAV1_LOG_LEVEL_WARNING, "No settings provided, using default settings!");
-        log(EASYAV1_LOG_LEVEL_WARNING, "By default neither video nor audio are processed.");
+        log(EASYAV1_LOG_LEVEL_INFO, "No settings provided, using default settings.");
     }
 
     nestegg_io io = {
@@ -670,6 +679,15 @@ static easyav1_timestamp get_next_packet(easyav1_t *easyav1)
         } else if (result == 0) {
             easyav1->is_finished = 1;
             log(EASYAV1_LOG_LEVEL_INFO, "End of stream.");
+
+            if (!easyav1->webm.packet) {
+                if (nestegg_duration(easyav1->webm.context, &timestamp)) {
+                    log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get duration from webm context.");
+                    return INVALID_TIMESTAMP;
+                }
+
+                return ns_to_ms(timestamp);
+            }
         }
     }
 
@@ -705,8 +723,6 @@ static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
 {
     // Handle seeking
     if (easyav1->seek == SEEKING_FOR_SQHDR) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Seeking to keyframe");
-
         Dav1dSequenceHeader seq_hdr;
 
         int result = dav1d_parse_sequence_header(&seq_hdr, data, size);
@@ -732,10 +748,14 @@ static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
         }
 
         if (result == NESTEGG_PACKET_HAS_KEYFRAME_TRUE) {
-            easyav1->seek = SEEKING_FOR_TIMESTAMP;
-        } else {
-            return 1;
+            easyav1->seek = SEEKING_FOUND_KEYFRAME;
         }
+
+        return 1;
+    }
+
+    if (easyav1->seek == SEEKING_FOUND_KEYFRAME) {
+        return 1;
     }
 
     Dav1dData buf = { 0 };
@@ -862,20 +882,26 @@ static int decode_audio(easyav1_t *easyav1, uint8_t *data, size_t size)
         .bytes = size
     };
 
-    if (vorbis_synthesis(&easyav1->audio.vorbis.block, &packet) ||
-        vorbis_synthesis_blockin(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to process audio packet.");
-        return 0;
-    }
-
     if (!easyav1->audio.has_samples_in_buffer) {
         easyav1->audio.frame.samples = 0;
     }
 
     if (easyav1->seek != NOT_SEEKING) {
+        if (vorbis_synthesis_trackonly(&easyav1->audio.vorbis.block, &packet) ||
+            vorbis_synthesis_blockin(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
+            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to process audio packet.");
+            return 0;
+        }
+
         int decoded_samples = vorbis_synthesis_pcmout(&easyav1->audio.vorbis.dsp, 0);
         vorbis_synthesis_read(&easyav1->audio.vorbis.dsp, decoded_samples);
         return 1;
+    }
+
+    if (vorbis_synthesis(&easyav1->audio.vorbis.block, &packet) ||
+        vorbis_synthesis_blockin(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
+        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to process audio packet.");
+        return 0;
     }
 
     float **pcm;
@@ -994,6 +1020,10 @@ static void release_packet(easyav1_t *easyav1)
 
 static int decode_cycle(easyav1_t *easyav1)
 {
+    if (easyav1->is_finished) {
+        return 0;
+    }
+
     int packet_decoded = decode_packet(easyav1);
 
     release_packet(easyav1);
@@ -1092,7 +1122,7 @@ int easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
 static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
     if (!nestegg_has_cues(easyav1->webm.context)) {
-        return timestamp;
+        return 0;
     }
 
     unsigned int cluster = 0;
@@ -1104,7 +1134,7 @@ static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1
     do {
         if (nestegg_get_cue_point(easyav1->webm.context, cluster, -1, &start_pos, &end_pos, &cue_timestamp)) {
             log(EASYAV1_LOG_LEVEL_WARNING, "Failed to get cue point %u.", cluster);
-            return timestamp;
+            return 0;
         }
 
         if (cue_timestamp >= timestamp) {
@@ -1137,67 +1167,126 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
         timestamp = duration;
     }
 
-    easyav1_timestamp old_timestamp = easyav1->timestamp;
+    easyav1_timestamp original_timestamp = easyav1->timestamp;
     easyav1_timestamp corrected_timestamp = get_closest_cue_point(easyav1, ms_to_ns(timestamp));
 
-    // Only seek the file if the timestamp is at a different cluster or before the current timestamp
-    if (corrected_timestamp > easyav1->timestamp || timestamp < easyav1->timestamp) {
+    unsigned int track = 0;
+
+    if (easyav1->video.active) {
+        track = easyav1->video.track;
+    } else {
+        track = easyav1->audio.track;
+    }
+
+    /*
+     * Two-pass seek when there's video:
+     *
+     * - The first pass finds the closest keyframe to the requested timestamp without decoding anything
+     * - The second pass skips all video decoding until that keyframe
+     */
+    easyav1_timestamp last_keyframe_timestamp = 0;
+
+    int audio_is_active = easyav1->audio.active;
+
+    easyav1->is_finished = 0;
+
+    for (int pass = 0; pass < 2; pass++) {
+
         easyav1->timestamp = ns_to_ms(corrected_timestamp);
-
-        unsigned int track = 0;
-
-        if (easyav1->video.active) {
-            track = easyav1->video.track;
-        } else {
-            track = easyav1->audio.track;
-        }
 
         if (nestegg_track_seek(easyav1->webm.context, track, corrected_timestamp)) {
             log(EASYAV1_LOG_LEVEL_ERROR, "Failed to seek to requested timestamp %u.", easyav1->timestamp);
             return 0;
         }
-    }
 
-    release_packet(easyav1);
+        release_packet(easyav1);
 
-    if (easyav1->video.active) {
-        dav1d_picture_unref(&easyav1->video.av1.pic);
-        dav1d_flush(easyav1->video.av1.context);
-        easyav1->seek = SEEKING_FOR_SQHDR;
-        easyav1->video.has_picture_to_output = 0;
-    }
-
-    if (easyav1->audio.active) {
-        if (easyav1->seek == NOT_SEEKING) {
-            easyav1->seek = SEEKING_FOR_KEYFRAME;
+        if (easyav1->video.active) {
+            dav1d_picture_unref(&easyav1->video.av1.pic);
+            dav1d_flush(easyav1->video.av1.context);
+            easyav1->seek = SEEKING_FOR_SQHDR;
+            easyav1->video.has_picture_to_output = 0;
         }
 
-        vorbis_synthesis_restart(&easyav1->audio.vorbis.dsp);
-        easyav1->audio.has_samples_in_buffer = 0;
+        if (audio_is_active) {
+            if (easyav1->seek == NOT_SEEKING) {
+                easyav1->seek = SEEKING_FOR_TIMESTAMP;
+
+                // No need for a second pass for audio only
+                pass = 1;
+            }
+
+            // No need to decode audio at all on first pass
+            if (pass == 0) {
+                easyav1->audio.active = 0;
+            } else {
+                easyav1->audio.active = 1;
+
+                vorbis_synthesis_restart(&easyav1->audio.vorbis.dsp);
+                easyav1->audio.has_samples_in_buffer = 0;
+            }
+        }
+
+        while (1) {
+            easyav1_timestamp current = get_next_packet(easyav1);
+
+            if (current == INVALID_TIMESTAMP) {
+                return 0;
+            }
+
+            easyav1->timestamp = current;
+
+            if (pass == 1) {
+                if (current >= last_keyframe_timestamp) {
+
+                    // If fast seeking is enabled, we don't decode until we find the correct timestamp, rather we
+                    // resume playing immediately after we get to the last keyframe before the requested timestamp
+                    if (easyav1->settings.use_fast_seeking) {
+                        easyav1->seek = NOT_SEEKING;
+                        break;
+                    } else {
+                        easyav1->seek = SEEKING_FOR_TIMESTAMP;
+                    }
+                } else if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                    easyav1->seek = SEEKING_FOUND_KEYFRAME;
+                }
+            }
+
+            if (easyav1->timestamp >= timestamp || easyav1->is_finished) {
+
+                // If we couldn't find a keyframe on the first pass, we need to seek again,
+                // starting on the previous cue point
+                if (pass == 0 && last_keyframe_timestamp < ns_to_ms(corrected_timestamp)) {
+
+                    // No keyframe found from the beginning of the file - this shouldn't happen, but just in case
+                    if (corrected_timestamp == 0) {
+                        log(EASYAV1_LOG_LEVEL_ERROR, "Unable to seek, no sequence header or keyframes found. Aborting.");
+                        return 0;
+                    }
+
+                    corrected_timestamp = get_closest_cue_point(easyav1, corrected_timestamp);
+                    last_keyframe_timestamp = 0;
+                    pass = -1;
+                }
+
+                easyav1->seek = NOT_SEEKING;
+                break;
+            }
+
+            if (!decode_cycle(easyav1)) {
+                return 0;
+            }
+
+            if (pass == 0 && easyav1->seek == SEEKING_FOUND_KEYFRAME) {
+                last_keyframe_timestamp = current;
+                easyav1->seek = SEEKING_FOR_KEYFRAME;
+            }
+        }
     }
-
-    while (1) {
-        easyav1_timestamp current = get_next_packet(easyav1);
-
-        if (current == INVALID_TIMESTAMP) {
-            return 0;
-        }
-
-        easyav1->timestamp = current;
-
-        if (easyav1->seek == SEEKING_FOR_TIMESTAMP && easyav1->timestamp >= timestamp) {
-            easyav1->seek = NOT_SEEKING;
-            break;
-        }
-
-        if (!decode_cycle(easyav1)) {
-            return 0;
-        }
-    }
-
-    log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->timestamp, old_timestamp);
 
     easyav1->is_finished = 0;
+    
+    log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->timestamp, original_timestamp);
 
     return 1;
 }
