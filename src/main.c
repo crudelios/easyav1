@@ -108,7 +108,8 @@ static int init_easyav1(const char *filename)
     easyav1_settings settings = easyav1_default_settings();
     settings.callbacks.video = video_callback;
     settings.callbacks.audio = audio_callback;
-    settings.max_audio_samples = 2048;
+    settings.log_level = EASYAV1_LOG_LEVEL_INFO;
+    settings.audio_offset_time = -22050 / 2048;
     data.easyav1 = easyav1_init_from_filename(filename, &settings);
     if (!data.easyav1) {
         return 0;
@@ -155,9 +156,21 @@ static int init_sdl(void)
         return 0;
     }
 
+    SDL_DisplayMode display_mode;
+    SDL_GetDesktopDisplayMode(0, &display_mode);
+
+    unsigned int video_width = easyav1_get_video_width(data.easyav1);
+    unsigned int video_height = easyav1_get_video_height(data.easyav1);
+
+    if (video_width > display_mode.w - 10) {
+        video_width = display_mode.w - 10;
+    }
+    if (video_height > display_mode.h - 100) {
+        video_height = display_mode.h - 100;
+    }
+
     data.SDL.window = SDL_CreateWindow("easyav1_player", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-    640, 480, SDL_WINDOW_SHOWN);
-    // easyav1_get_video_width(data.easyav1), easyav1_get_video_height(data.easyav1), SDL_WINDOW_SHOWN);
+        video_width, video_height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 
     if (!data.SDL.window) {
         printf("Failed to create window. Reason: %s\n", SDL_GetError());
@@ -279,6 +292,8 @@ static int init_fonts(void)
  * You also need to call a final SDL_RenderDrawLine to draw the leftmost line (as the one in the loop is slanted).
  *
  * This is inneficient because, for a triangle of size N, you need to draw N + N/2 + 2 lines.
+ *
+ * It also doesn't look that good with partial transparency, as the lines overlap.
  */
 static void prepare_play_icon(void)
 {
@@ -686,7 +701,7 @@ int main(int argc, char **argv)
     easyav1_timestamp last_timestamp = SDL_GetTicks64();
     easyav1_timestamp current_timestamp = last_timestamp;
 
-    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp)) {
+    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) == EASYAV1_STATUS_OK) {
         handle_input();
 
         if (data.quit) {

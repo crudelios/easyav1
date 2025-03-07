@@ -80,6 +80,36 @@ typedef uint64_t easyav1_timestamp;
 
 
 /*
+ * Boolean enumeration.
+ */
+typedef enum {
+    EASYAV1_FALSE = 0,
+    EASYAV1_TRUE = 1
+} easyav1_bool;
+
+
+/*
+ * Decoder status, either returned by specific functions or by `easyav1_get_status`.
+ */
+typedef enum {
+    // The values below are returned by functions, with `EASYAV1_STATUS_FINISHED` being returned only by `easyav1_decode_*`.
+    EASYAV1_STATUS_ERROR = 0,
+    EASYAV1_STATUS_OK = 1,
+    EASYAV1_STATUS_FINISHED = 2,
+
+    // The values below are only returned by `easyav1_get_status`
+    EASYAV1_STATUS_INVALID_ARGUMENT = -1,
+    EASYAV1_STATUS_OUT_OF_MEMORY = -2,
+    EASYAV1_STATUS_IO_ERROR = -3,
+    EASYAV1_STATUS_DECODER_ERROR = -4,
+    EASYAV1_STATUS_NOT_IMPLEMENTED = -5,
+    EASYAV1_STATUS_INVALID_STATE = -6,
+    EASYAV1_STATUS_INVALID_DATA = -7,
+    EASYAV1_STATUS_UNSUPPORTED = -8
+} easyav1_status;
+
+
+/*
  * A funtion that reads data from a source.
  *
  * @param buffer The buffer to read the data into.
@@ -202,11 +232,12 @@ typedef enum {
  *
  * - `skip_unprocessed_frames`: Indicates whether unprocessed frames should be skipped.
  *
- *     If this is set to 1, the decoder will skip frames that have not been processed by the video callback.
+ *     If this is set to `EASYAV1_TRUE`, the decoder will skip frames that have not been processed by the video callback.
  *
  * - `interlace_audio`: Indicates whether audio should be interlaced.
  *
- *     If this is set to 1, the audio samples will be interleaved. If it is set to 0, the samples will be deinterleaved.
+ *     If this is set to `EASYAV1_TRUE`, the audio samples will be interleaved. If it is set to `EASYAV1_FALSE`,
+ *     the samples will be deinterleaved.
  *
  *     Interleaved audio can be obtained by calling `easyav1_get_audio_frame` and accessing the `pcm.interlaced` field
  *     and deinterleaved audio can be obtained by calling `easyav1_get_audio_frame` and then accessing the
@@ -221,16 +252,16 @@ typedef enum {
  *
  * - `close_handle_on_destroy`: Indicates whether the handle should be closed on destroy.
  *
- *     If this is set to 1, the handle will be closed when calling `easyav1_destroy`. If it is set to 0, the handle will
- *     not be closed.
+ *     If this is set to `EASYAV1_TRUE`, the handle will be closed when calling `easyav1_destroy`.
+ *     If it is set to `EASYAV1_FALSE`, the handle will not be closed.
  *     The handle will either be the `FILE` handle (if the instance was initialized from such a handle using
  *     `easyav1_init_from_file`) or the memory buffer (if the instance was initialized from `easyav1_init_from_memory`).
  *
  * - `callbacks`: The callbacks to use for video and audio.
  *
- *   - `video`: The video callback to use. If this is set to 0, no video callback will be used.
+ *   - `video`: The video callback to use. If this is set to `NULL`, no video callback will be used.
  *      The format of the callback should be: `void callback(const easyav1_video_frame *frame, void *userdata)`.
- *   - `audio`: The audio callback to use. If this is set to 0, no audio callback will be used.
+ *   - `audio`: The audio callback to use. If this is set to `NULL`, no audio callback will be used.
  *      The format of the callback should be: `void callback(const easyav1_audio_frame *frame, void *userdata)`.
  *   - `userdata`: The userdata to pass to the callbacks.
  *
@@ -246,6 +277,13 @@ typedef enum {
  *    to the nearest keyframe before the requested timestamp. Otherwise it will seek to the requested timestamp, which
  *    can be slower as all frames between the nearest keyframe and the requested timestamp will need to be decoded.
  *
+ * - `audio_offset_time`: The audio offset time in relation to video, in milliseconds.
+ *    If negative, this will make the audio play earlier than video by the specified amount.
+ *    If positive, audio will play later in relation to video.
+ *    This can be useful if the audio and video are out of sync, for example due to audio buffering.
+ *    If using SDL for audio, you should set the adjustment to (SDL_AudioSpec.samples / SDL_AudioSpec.freq).
+ *    Note: The values set in the settings will also be offset by the webm's internal audio delay value.
+ *
  * - `log_level`: The log level to use.
  *
  *     This can be one of the following:
@@ -256,12 +294,12 @@ typedef enum {
  *        purposes.
  */
 typedef struct {
-    int enable_video;
-    int enable_audio;
-    int skip_unprocessed_frames;
-    int interlace_audio;
+    easyav1_bool enable_video;
+    easyav1_bool enable_audio;
+    easyav1_bool skip_unprocessed_frames;
+    easyav1_bool interlace_audio;
     easyav1_video_conversion video_conversion;
-    int close_handle_on_destroy;
+    easyav1_bool close_handle_on_destroy;
     struct {
         easyav1_video_callback video;
         easyav1_audio_callback audio;
@@ -269,8 +307,8 @@ typedef struct {
     } callbacks;
     unsigned int video_track;
     unsigned int audio_track;
-    unsigned int max_audio_samples;
-    int use_fast_seeking;
+    easyav1_bool use_fast_seeking;
+    int64_t audio_offset_time;
     easyav1_log_level_t log_level;
 } easyav1_settings;
 
@@ -279,18 +317,18 @@ typedef struct {
  *
  * The default settings are:
  *
- * - Video enabled (.enable_video = 1)
- * - Audio enabled (.enable_audio = 1)
- * - Skip unprocessed frames (.skip_unprocessed_frames = 1)
- * - Interlace audio (.interlace_audio = 1)
- * - No video conversion (.video_conversion = EASYAV1_VIDEO_CONVERSION_NONE)
- * - Don't close the handle on destroy (.close_handle_on_destroy = 0)
- * - No callbacks (callbacks.video = 0, callbacks.audio = 0, callbacks.userdata = 0)
- * - Video track 0 (.video_track = 0)
- * - Audio track 0 (.audio_track = 0)
- * - Maximum audio samples 4096 (.max_audio_samples = 4096)
- * - Don't use fast seeking (.use_fast_seeking = 0)
- * - Log level warning (.log_level = EASYAV1_LOG_LEVEL_WARNING)
+ * - Video enabled (`.enable_video = EASYAV1_TRUE`)
+ * - Audio enabled (`.enable_audio = EASYAV1_TRUE`)
+ * - Skip unprocessed frames (`.skip_unprocessed_frames = EASYAV1_TRUE`)
+ * - Interlace audio (`.interlace_audio = EASYAV1_TRUE`)
+ * - No video conversion (`.video_conversion = EASYAV1_VIDEO_CONVERSION_NONE`)
+ * - Don't close the handle on destroy (`.close_handle_on_destroy = EASYAV1_FALSE`)
+ * - No callbacks (`callbacks.video = NULL, callbacks.audio = NULL, callbacks.userdata = NULL`)
+ * - Video track 0 (`.video_track = 0`)
+ * - Audio track 0 (`.audio_track = 0`)
+ * - Don't use fast seeking (`.use_fast_seeking = EASYAV1_FALSE`)
+ * - No audio offset time (`.audio_offset_time = 0`)
+ * - Log level warning (`.log_level = EASYAV1_LOG_LEVEL_WARNING`)
  *
  * @return The default settings.
  */
@@ -346,9 +384,10 @@ easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const e
  * Decodes the next packet.
  *
  * @param easyav1 The easyav1 instance.
- * @return 1 if a packet was decoded, 0 if the end of the stream was reached or if there was an error.
+ * @return `EASYAV1_STATUS_OK` if a packet was decoded, `EASYAV1_STATUS_FINISHED` if the end of the stream was reached
+ *          or `EASYAV1_STATUS_ERROR` if there was an error.
  */
-int easyav1_decode_next(easyav1_t *easyav1);
+easyav1_status easyav1_decode_next(easyav1_t *easyav1);
 
 
 /*
@@ -357,9 +396,10 @@ int easyav1_decode_next(easyav1_t *easyav1);
  * @param easyav1 The easyav1 instance.
  * @param timestamp The timestamp to decode until.
  *
- * @return 1 if successful, 0 if the end of the stream was reached or if there was an error.
+ * @return `EASYAV1_STATUS_OK` if a packet was decoded, `EASYAV1_STATUS_FINISHED` if the end of the stream was reached
+ *          or `EASYAV1_STATUS_ERROR` if there was an error.
  */
-int easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp);
+easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp);
 
 
 /*
@@ -368,9 +408,10 @@ int easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp);
  * @param easyav1 The easyav1 instance.
  * @param time The duration to decode for.
  *
- * @return 1 if successful, 0 if the end of the stream was reached or if there was an error.
+ * @return `EASYAV1_STATUS_OK` if a packet was decoded, `EASYAV1_STATUS_FINISHED` if the end of the stream was reached
+ *          or `EASYAV1_STATUS_ERROR` if there was an error.
  */
-int easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time);
+easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time);
 
 
 /*
@@ -379,9 +420,9 @@ int easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time);
  * @param easyav1 The easyav1 instance.
  * @param time The duration to seek forward by.
  *
- * @return 1 if successful, 0 if there was an error.
+ * @return `EASYAV1_STATUS_OK` if successful, `EASYAV1_STATUS_ERROR` if there was an error.
  */
-int easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time);
+easyav1_status easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time);
 
 
 /*
@@ -390,9 +431,9 @@ int easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time);
  * @param easyav1 The easyav1 instance.
  * @param time The duration to seek backward by.
  *
- * @return 1 if successful, 0 if there was an error.
+ * @return `EASYAV1_STATUS_OK` if successful, `EASYAV1_STATUS_ERROR` if there was an error.
  */
-int easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time);
+easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time);
 
 
 /*
@@ -401,9 +442,9 @@ int easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time);
  * @param easyav1 The easyav1 instance.
  * @param timestamp The timestamp to seek to.
  *
- * @return 1 if successful, 0 if there was an error.
+ * @return `EASYAV1_STATUS_OK` if successful, `EASYAV1_STATUS_ERROR` if there was an error.
  */
-int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp);
+easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp);
 
 
 /*
@@ -421,9 +462,9 @@ easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return 1 if there is a video track, 0 otherwise.
+ * @return `EASYAV1_TRUE` if there is a video track, `EASYAV1_FALSE` otherwise.
  */
-int easyav1_has_video_track(const easyav1_t *easyav1);
+easyav1_bool easyav1_has_video_track(const easyav1_t *easyav1);
 
 
 /*
@@ -431,9 +472,9 @@ int easyav1_has_video_track(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return 1 if there is an audio track, 0 otherwise.
+ * @return `EASYAV1_TRUE` if there is an audio track, `EASYAV1_TRUE` otherwise.
  */
-int easyav1_has_audio_track(const easyav1_t *easyav1);
+easyav1_bool easyav1_has_audio_track(const easyav1_t *easyav1);
 
 
 /*
@@ -441,7 +482,7 @@ int easyav1_has_audio_track(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return The width of the video track, or 0 if there was an error or there is no video track.
+ * @return The width of the video track, `0` if there was an error or there is no video track.
  */
 unsigned int easyav1_get_video_width(const easyav1_t *easyav1);
 
@@ -451,7 +492,7 @@ unsigned int easyav1_get_video_width(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return The height of the video track, or 0 if there was an error or there is no video track.
+ * @return The height of the video track, or `0` if there was an error or there is no video track.
  */
 unsigned int easyav1_get_video_height(const easyav1_t *easyav1);
 
@@ -461,7 +502,7 @@ unsigned int easyav1_get_video_height(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return The number of audio channels, or 0 if there was an error or there is no audio track.
+ * @return The number of audio channels, or `0` if there was an error or there is no audio track.
  */
 unsigned int easyav1_get_audio_channels(const easyav1_t *easyav1);
 
@@ -471,7 +512,7 @@ unsigned int easyav1_get_audio_channels(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return The audio sample rate, or 0 if there was an error or there is no audio track.
+ * @return The audio sample rate, or `0` if there was an error or there is no audio track.
  */
 unsigned int easyav1_get_audio_sample_rate(const easyav1_t *easyav1);
 
@@ -481,9 +522,9 @@ unsigned int easyav1_get_audio_sample_rate(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return 1 if a video frame is available, 0 otherwise.
+ * @return `EASYAV1_TRUE` if a video frame is available, `EASYAV1_FALSE` otherwise.
  */
-int easyav1_has_video_frame(const easyav1_t *easyav1);
+easyav1_bool easyav1_has_video_frame(const easyav1_t *easyav1);
 
 /*
  * Gets the current video frame, is one is available.
@@ -493,7 +534,7 @@ int easyav1_has_video_frame(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return A pointer to the video frame, or NULL if no frame is available.
+ * @return A pointer to the video frame, or `NULL` if no frame is available.
  */
 const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1);
 
@@ -502,9 +543,9 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return 1 if the audio buffer is filled, 0 otherwise.
+ * @return `EASYAV1_TRUE` if the audio buffer is filled, `EASYAV1_FALSE` otherwise.
  */
-int easyav1_is_audio_buffer_filled(const easyav1_t *easyav1);
+easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1);
 
 /*
  * Gets the current audio frame, if there are available samples.
@@ -514,7 +555,7 @@ int easyav1_is_audio_buffer_filled(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return A pointer to the audio frame, or NULL if there are no samples to process.
+ * @return A pointer to the audio frame, or `NULL` if there are no samples to process.
  */
 const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1);
 
@@ -524,7 +565,7 @@ const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return The duration of the file, or 0 if there was an error.
+ * @return The duration of the file, or `0` if there was an error.
  */
 easyav1_timestamp easyav1_get_duration(const easyav1_t *easyav1);
 
@@ -534,9 +575,9 @@ easyav1_timestamp easyav1_get_duration(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return 1 if the instance has finished decoding, 0 otherwise.
+ * @return `EASYAV1_TRUE` if the instance has finished decoding, `EASYAV1_FALSE` otherwise.
  */
-int easyav1_is_finished(const easyav1_t *easyav1);
+easyav1_bool easyav1_is_finished(const easyav1_t *easyav1);
 
 
 /*

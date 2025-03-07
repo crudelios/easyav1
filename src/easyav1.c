@@ -10,10 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define AUDIO_BUFFER_SIZE 4096
+#define PACKET_QUEUE_BASE_CAPACITY 8
 #define VORBIS_HEADERS_COUNT 3
 #define DECODE_UNTIL_SKIP_MS 1000
 
 #define INVALID_TIMESTAMP ((easyav1_timestamp) -1)
+
+#define EASYAV1_STATUS_IS_ERROR(status) ((status) <= EASYAV1_STATUS_ERROR)
 
 typedef enum {
     STREAM_TYPE_NONE = 0,
@@ -29,36 +33,60 @@ typedef enum {
     SEEKING_FOR_TIMESTAMP = 4
 } seeking_mode;
 
+typedef enum {
+    PACKET_TYPE_VIDEO = 0,
+    PACKET_TYPE_AUDIO = 1
+} easyav1_packet_type;
+
+typedef struct {
+    easyav1_timestamp timestamp;
+    nestegg_packet *packet;
+    easyav1_bool is_keyframe;
+    easyav1_packet_type type;
+} easyav1_packet;
+
+typedef struct {
+    easyav1_packet *items;
+    size_t count;
+    size_t capacity;
+    size_t begin;
+} easyav1_packet_queue;
+
 typedef struct easyav1_t {
+
     struct {
         nestegg *context;
-        nestegg_packet *packet;
         unsigned int num_tracks;
     } webm;
+
     struct {
+
         struct {
             Dav1dContext *context;
             Dav1dPicture pic;
         } av1;
 
-        int has_picture_to_output;
+        easyav1_bool has_picture_to_output;
 
-        unsigned int active;
+        easyav1_bool active;
         unsigned int track;
 
         unsigned int width;
         unsigned int height;
 
         easyav1_video_frame frame;
+
     } video;
+
     struct {
+
         struct {
             vorbis_info info;
             vorbis_block block;
             vorbis_dsp_state dsp;
         } vorbis;
 
-        unsigned int active;
+        easyav1_bool active;
         unsigned int track;
 
         unsigned int channels;
@@ -66,18 +94,39 @@ typedef struct easyav1_t {
 
         float *buffer;
 
-        int has_samples_in_buffer;
+        easyav1_bool has_samples_in_buffer;
 
         easyav1_audio_frame frame;
+
     } audio;
+
+    struct {
+
+        easyav1_bool synced;
+        easyav1_bool all_fetched;
+
+        easyav1_packet_queue video_queue;
+        easyav1_packet_queue audio_queue;
+
+        int64_t audio_offset;
+
+    } packets;
+
     struct {
         void *data;
         stream_type type;
     } stream;
+
     easyav1_settings settings;
+
     easyav1_timestamp timestamp;
+    easyav1_timestamp duration;
+    easyav1_timestamp time_scale;
+
     seeking_mode seek;
-    int is_finished;
+
+    easyav1_status status;
+
 } easyav1_t;
 
 typedef struct {
@@ -87,38 +136,38 @@ typedef struct {
 } easyav1_memory;
 
 static const easyav1_settings DEFAULT_SETTINGS = {
-    .enable_video = 1,
-    .enable_audio = 1,
-    .skip_unprocessed_frames = 1,
-    .interlace_audio = 1,
+    .enable_video = EASYAV1_TRUE,
+    .enable_audio = EASYAV1_TRUE,
+    .skip_unprocessed_frames = EASYAV1_TRUE,
+    .interlace_audio = EASYAV1_TRUE,
     .video_conversion = EASYAV1_VIDEO_CONVERSION_NONE,
-    .close_handle_on_destroy = 0,
+    .close_handle_on_destroy = EASYAV1_FALSE,
     .callbacks = {
-        .video = 0,
-        .audio = 0,
-        .userdata = 0
+        .video = NULL,
+        .audio = NULL,
+        .userdata = NULL
     },
     .video_track = 0,
     .audio_track = 0,
-    .max_audio_samples = 4096,
-    .use_fast_seeking = 0,
+    .use_fast_seeking = EASYAV1_FALSE,
+    .audio_offset_time = 0,
     .log_level = EASYAV1_LOG_LEVEL_WARNING
 };
 
-typedef int (*decoder_function)(easyav1_t *, uint8_t *, size_t);
+typedef easyav1_status (*decoder_function)(easyav1_t *, uint8_t *, size_t);
 
 
 /*
  * Utility functions
  */
-static inline easyav1_timestamp ns_to_ms(easyav1_timestamp ns)
+static inline easyav1_timestamp internal_timestamp_to_ms(const easyav1_t *easyav1, easyav1_timestamp ns)
 {
-    return ns / 1000000;
+    return ns / easyav1->time_scale;
 }
 
-static inline easyav1_timestamp ms_to_ns(easyav1_timestamp ms)
+static inline easyav1_timestamp ms_to_internal_timestmap(const easyav1_t *easyav1, easyav1_timestamp ms)
 {
-    return ms * 1000000;
+    return ms * easyav1->time_scale;
 }
 
 
@@ -184,6 +233,11 @@ static void log_from_dav1d(void *userdata, const char *format, va_list args)
     fflush(stderr);
 }
 
+#define LOG_AND_SET_ERROR(error_type, message, ...) \
+    log(EASYAV1_LOG_LEVEL_ERROR, message, ##__VA_ARGS__); \
+    if (easyav1) { \
+        easyav1->status = error_type; \
+    } \
 
 /*
  * I/O functions
@@ -281,13 +335,13 @@ static int64_t memory_tell(void *userdata)
  * Initialization functions
  */
 
-static int init_video(easyav1_t *easyav1, unsigned int track)
+static easyav1_status init_video(easyav1_t *easyav1, unsigned int track)
 {
     nestegg_video_params params;
 
     if (nestegg_track_video_params(easyav1->webm.context, track, &params)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get video track parameters.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get video track parameters.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     Dav1dSettings dav1d_settings;
@@ -295,11 +349,11 @@ static int init_video(easyav1_t *easyav1, unsigned int track)
     dav1d_settings.logger = (Dav1dLogger) { .cookie = 0, .callback = log_from_dav1d };
 
     if (dav1d_open(&easyav1->video.av1.context, &dav1d_settings) < 0) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to initialize AV1 decoder.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to initialize AV1 decoder.");
+        return EASYAV1_STATUS_ERROR;
     }
 
-    easyav1->video.active = 1;
+    easyav1->video.active = EASYAV1_TRUE;
     easyav1->video.track = track;
 
     easyav1->video.width = params.width;
@@ -307,18 +361,18 @@ static int init_video(easyav1_t *easyav1, unsigned int track)
 
     log(EASYAV1_LOG_LEVEL_INFO, "Video initialized. Size: %ux%u.", easyav1->video.width, easyav1->video.height);
 
-    return 1;
+    return EASYAV1_STATUS_OK;
 }
 
-static unsigned int prepare_audio_buffer(easyav1_t *easyav1)
+static easyav1_status prepare_audio_buffer(easyav1_t *easyav1)
 {
-    unsigned max_samples = easyav1->settings.max_audio_samples * easyav1->audio.channels;
+    unsigned max_samples = AUDIO_BUFFER_SIZE * easyav1->audio.channels;
 
     easyav1->audio.buffer = malloc(max_samples * sizeof(float));
 
     if (!easyav1->audio.buffer) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to allocate audio buffer.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_OUT_OF_MEMORY, "Failed to allocate audio buffer.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     memset(easyav1->audio.buffer, 0, max_samples * sizeof(float));
@@ -327,34 +381,34 @@ static unsigned int prepare_audio_buffer(easyav1_t *easyav1)
 
     if (easyav1->settings.interlace_audio) {
         easyav1->audio.frame.pcm.interlaced = easyav1->audio.buffer;
-        return 1;
+        return EASYAV1_STATUS_OK;
     }
 
     easyav1->audio.frame.pcm.deinterlaced = malloc(easyav1->audio.channels * sizeof(float *));
     if (!easyav1->audio.frame.pcm.deinterlaced) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to allocate deinterlaced audio buffer.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_OUT_OF_MEMORY, "Failed to allocate deinterlaced audio buffer.");
+        return EASYAV1_STATUS_ERROR;
     }
     for (unsigned int i = 0; i < easyav1->audio.channels; i++) {
-        easyav1->audio.frame.pcm.deinterlaced[i] = easyav1->audio.buffer + i * easyav1->settings.max_audio_samples;
+        easyav1->audio.frame.pcm.deinterlaced[i] = easyav1->audio.buffer + i * AUDIO_BUFFER_SIZE;
     }
 
-    return 1;
+    return EASYAV1_STATUS_OK;
 }
 
-static int init_audio(easyav1_t *easyav1, unsigned int track)
+static easyav1_status init_audio(easyav1_t *easyav1, unsigned int track)
 {
     unsigned int headers;
 
     if (nestegg_track_codec_data_count(easyav1->webm.context, track, &headers)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get audio codec header count.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get audio codec header count.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     // Vorbis data should always have 3 headers
     if (headers != VORBIS_HEADERS_COUNT) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Vorbis data should always have 3 headers.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Vorbis data should always have 3 headers.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     vorbis_comment comment;
@@ -367,8 +421,9 @@ static int init_audio(easyav1_t *easyav1, unsigned int track)
         size_t header_size;
 
         if (nestegg_track_codec_data(easyav1->webm.context, track, header, &header_data, &header_size)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get audio codec header data for header %u.", header);
-            return 0;
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get audio codec header data for header %u.",
+                header);
+            return EASYAV1_STATUS_ERROR;
         }
 
         ogg_packet packet;
@@ -380,50 +435,52 @@ static int init_audio(easyav1_t *easyav1, unsigned int track)
         packet.packetno = header;
 
         if (vorbis_synthesis_headerin(&easyav1->audio.vorbis.info, &comment, &packet)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to process audio codec header %u.", header);
-            return 0;
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to process audio codec header %u.", header);
+            return EASYAV1_STATUS_ERROR;
         }
     }
 
     vorbis_comment_clear(&comment);
 
     if (vorbis_synthesis_init(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.info)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to initialize vorbis synthesis.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to initialize vorbis synthesis.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     if (vorbis_block_init(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to initialize vorbis block.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to initialize vorbis block.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     nestegg_audio_params params;
     if (nestegg_track_audio_params(easyav1->webm.context, track, &params)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get audio track parameters.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get audio track parameters.");
+        return EASYAV1_STATUS_ERROR;
     }
 
-    easyav1->audio.active = 1;
+    easyav1->audio.active = EASYAV1_TRUE;
     easyav1->audio.track = track;
 
     easyav1->audio.channels = params.channels;
     easyav1->audio.sample_rate = params.rate;
+    easyav1->packets.audio_offset = easyav1->settings.audio_offset_time +
+        internal_timestamp_to_ms(easyav1, params.codec_delay);
 
-    if (!prepare_audio_buffer(easyav1)) {
-        return 0;
+    if (prepare_audio_buffer(easyav1) == EASYAV1_STATUS_ERROR) {
+        return EASYAV1_STATUS_ERROR;
     }
 
     log(EASYAV1_LOG_LEVEL_INFO, "Audio initialized. Channels: %u, sample rate: %uhz.",
         easyav1->audio.channels, easyav1->audio.sample_rate);
 
-    return 1;
+    return EASYAV1_STATUS_OK;
 }
 
-static int init_webm_tracks(easyav1_t *easyav1)
+static easyav1_status init_webm_tracks(easyav1_t *easyav1)
 {
     if (nestegg_track_count(easyav1->webm.context, &easyav1->webm.num_tracks)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get track count");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track count");
+        return EASYAV1_STATUS_ERROR;
     }
 
     unsigned int current_video_track = 0;
@@ -434,8 +491,8 @@ static int init_webm_tracks(easyav1_t *easyav1)
         int type = nestegg_track_type(easyav1->webm.context, track);
     
         if (type == -1) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get track type.");
-            return 0;
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track type.");
+            return EASYAV1_STATUS_ERROR;
         }
 
         if (type == NESTEGG_TRACK_UNKNOWN) {
@@ -446,14 +503,14 @@ static int init_webm_tracks(easyav1_t *easyav1)
         int codec = nestegg_track_codec_id(easyav1->webm.context, track);
 
         if (codec == -1) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get codec for track %u.", track);
-            return 0;
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get codec for track %u.", track);
+            return EASYAV1_STATUS_ERROR;
         }
 
         if (type == NESTEGG_TRACK_VIDEO) {
 
             // Video already found or disabled - skip
-            if (!easyav1->settings.enable_video || easyav1->video.active) {
+            if (easyav1->settings.enable_video == EASYAV1_FALSE || easyav1->video.active == EASYAV1_TRUE) {
                 continue;
             }
 
@@ -469,15 +526,15 @@ static int init_webm_tracks(easyav1_t *easyav1)
                 continue;
             }
 
-            if (!init_video(easyav1, track)) {
-                return 0;
+            if (init_video(easyav1, track) == EASYAV1_STATUS_ERROR) {
+                return EASYAV1_STATUS_ERROR;
             }
         }
 
         if (type == NESTEGG_TRACK_AUDIO) {
 
             // Audio already found or disabled - skip
-            if (!easyav1->settings.enable_audio || easyav1->audio.active) {
+            if (easyav1->settings.enable_audio == EASYAV1_FALSE || easyav1->audio.active == EASYAV1_TRUE) {
                 continue;
             }
 
@@ -493,31 +550,34 @@ static int init_webm_tracks(easyav1_t *easyav1)
                 continue;
             }
 
-            if (!init_audio(easyav1, track)) {
-                return 0;
+            if (init_audio(easyav1, track) == EASYAV1_STATUS_ERROR) {
+                return EASYAV1_STATUS_ERROR;
             }
         }
     }
-    return 1;
+
+    return EASYAV1_STATUS_OK;
 }
 
 easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const easyav1_settings *settings)
 {
-    easyav1_t *easyav1 = 0;
+    easyav1_t *easyav1 = NULL;
 
     if (!stream || !stream->read_func || !stream->seek_func || !stream->tell_func) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Stream is NULL or missing read, seek or tell functions");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_INVALID_ARGUMENT, "Stream is NULL or missing read, seek or tell functions");
+        return NULL;
     }
 
     easyav1 = malloc(sizeof(easyav1_t));
 
     if (!easyav1) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to allocate memory for the easyav1 handle");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_OUT_OF_MEMORY, "Failed to allocate memory for the easyav1 handle");
+        return NULL;
     }
 
     memset(easyav1, 0, sizeof(easyav1_t));
+
+    easyav1->status = EASYAV1_STATUS_OK;
 
     if (settings) {
         easyav1->settings = *settings;
@@ -534,14 +594,39 @@ easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const e
     };
 
     if (nestegg_init(&easyav1->webm.context, io, log_from_nestegg, -1)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to initialize webm context");
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_INVALID_STATE, "Failed to initialize webm context");
         easyav1_destroy(&easyav1);
-        return 0;
+        return NULL;
     }
 
-    if (!init_webm_tracks(easyav1)) {
+    easyav1_timestamp duration;
+
+    if (nestegg_duration(easyav1->webm.context, &duration)) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get duration");
         easyav1_destroy(&easyav1);
-        return 0;
+        return NULL;
+    }
+
+    if (nestegg_tstamp_scale(easyav1->webm.context, &easyav1->time_scale)) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get time scale.");
+        easyav1_destroy(&easyav1);
+        return NULL;
+    }
+
+    if (easyav1->time_scale == 0) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Time scale is 0.");
+        easyav1_destroy(&easyav1);
+        return NULL;
+    }
+
+    easyav1->duration = internal_timestamp_to_ms(easyav1, duration);
+
+    log(EASYAV1_LOG_LEVEL_INFO, "File duration: %llu minutes and %llu seconds.",
+        easyav1->duration / 60000, (easyav1->duration / 1000) % 60);
+
+    if (init_webm_tracks(easyav1) == EASYAV1_STATUS_ERROR) {
+        easyav1_destroy(&easyav1);
+        return NULL;
     }
 
     return easyav1;
@@ -549,18 +634,18 @@ easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const e
 
 easyav1_t *easyav1_init_from_memory(const void *data, size_t size, const easyav1_settings *settings)
 {
-    easyav1_t *easyav1 = 0;
+    easyav1_t *easyav1 = NULL;
 
     if (!data || !size) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Data is NULL or size is 0");
-        return 0;
+        return NULL;
     }
 
     easyav1_memory *mem = malloc(sizeof(easyav1_memory));
 
     if (!mem) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Failed to allocate memory for memory stream");
-        return 0;
+        return NULL;
     }
 
     mem->data = (uint8_t *) data;
@@ -579,7 +664,7 @@ easyav1_t *easyav1_init_from_memory(const void *data, size_t size, const easyav1
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Failed to create easyav1 handle from memory stream");
         free(mem);
-        return 0;
+        return NULL;
     }
 
     easyav1->stream.type = STREAM_TYPE_MEMORY;
@@ -590,11 +675,11 @@ easyav1_t *easyav1_init_from_memory(const void *data, size_t size, const easyav1
 
 easyav1_t *easyav1_init_from_file(FILE *f, const easyav1_settings *settings)
 {
-    easyav1_t *easyav1 = 0;
+    easyav1_t *easyav1 = NULL;
 
     if (!f) {
         log(EASYAV1_LOG_LEVEL_ERROR, "File handle is NULL");
-        return 0;
+        return NULL;
     }
 
     easyav1_stream file_stream = {
@@ -611,7 +696,7 @@ easyav1_t *easyav1_init_from_file(FILE *f, const easyav1_settings *settings)
         if ((settings && settings->close_handle_on_destroy) || (!settings && DEFAULT_SETTINGS.close_handle_on_destroy)) {
             fclose(f);
         }
-        return 0;
+        return NULL;
     }
 
     if (easyav1->settings.close_handle_on_destroy) {
@@ -624,18 +709,18 @@ easyav1_t *easyav1_init_from_file(FILE *f, const easyav1_settings *settings)
 
 easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settings *settings)
 {
-    easyav1_t *easyav1 = 0;
+    easyav1_t *easyav1 = NULL;
 
     if (!filename) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Filename is NULL");
-        return 0;
+        return NULL;
     }
 
     FILE *f = fopen(filename, "rb");
 
     if (!f) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Failed to open file %s", filename);
-        return 0;
+        return NULL;
     }
 
     easyav1 = easyav1_init_from_file(f, settings);
@@ -643,7 +728,7 @@ easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settin
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Failed to create easyav1 structure from file %s", filename);
         fclose(f);
-        return 0;
+        return NULL;
     }
 
     easyav1->stream.type = STREAM_TYPE_FILE;
@@ -654,50 +739,344 @@ easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settin
 
 
 /*
- * Decoding functions
+ * Packet handling functions
  */
 
-static easyav1_timestamp get_next_packet(easyav1_t *easyav1)
+static easyav1_status increase_packet_queue_capacity(easyav1_t *easyav1, easyav1_packet_queue *queue)
 {
-    easyav1_timestamp timestamp = 0;
+    size_t new_capacity = queue->capacity + PACKET_QUEUE_BASE_CAPACITY;
+    easyav1_packet *new_queue = malloc(new_capacity * sizeof(easyav1_packet));
 
-    if (!easyav1->webm.packet) {
-        if (easyav1->is_finished) {
-            if (nestegg_duration(easyav1->webm.context, &timestamp)) {
-                log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get duration from webm context.");
-                return INVALID_TIMESTAMP;
-            }
-
-            return ns_to_ms(timestamp);
-        }
-    
-        int result = nestegg_read_packet(easyav1->webm.context, &easyav1->webm.packet);
-
-        if (result < 0) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to read packet from webm context.");
-            return INVALID_TIMESTAMP;
-        } else if (result == 0) {
-            easyav1->is_finished = 1;
-            log(EASYAV1_LOG_LEVEL_INFO, "End of stream.");
-
-            if (!easyav1->webm.packet) {
-                if (nestegg_duration(easyav1->webm.context, &timestamp)) {
-                    log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get duration from webm context.");
-                    return INVALID_TIMESTAMP;
-                }
-
-                return ns_to_ms(timestamp);
-            }
-        }
+    if (!new_queue) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_OUT_OF_MEMORY, "Failed to allocate memory for packet queue.");
+        return EASYAV1_STATUS_ERROR;
     }
 
-    if (nestegg_packet_tstamp(easyav1->webm.packet, &timestamp)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get timestamp from packet.");
-        return INVALID_TIMESTAMP;
+    if (queue->capacity) {
+        memcpy(new_queue, queue->items + queue->begin, (queue->capacity - queue->begin) * sizeof(easyav1_packet));
+        memcpy(new_queue + queue->capacity - queue->begin, queue->items, queue->begin * sizeof(easyav1_packet));
     }
 
-    return ns_to_ms(timestamp);
+    memset(new_queue + queue->capacity, 0, PACKET_QUEUE_BASE_CAPACITY * sizeof(easyav1_packet));
+
+    free(queue->items);
+
+    queue->items = new_queue;
+    queue->capacity = new_capacity;
+    queue->begin = 0;
+
+    return EASYAV1_STATUS_OK;
 }
+
+static easyav1_packet *queue_new_packet(easyav1_t *easyav1, easyav1_packet_queue *queue)
+{
+    if (queue->count == queue->capacity) {
+        if (increase_packet_queue_capacity(easyav1, queue) == EASYAV1_STATUS_ERROR) {
+            return NULL;
+        }
+    }
+
+    size_t index = (queue->begin + queue->count) % queue->capacity;
+
+    queue->count++;
+
+    return &queue->items[index];
+}
+
+static easyav1_packet *retrieve_packet_from_queue(easyav1_t *easyav1, easyav1_packet_queue *queue)
+{
+    if (!queue->count) {
+        return NULL;
+    }
+
+    return &queue->items[queue->begin];
+}
+
+static easyav1_packet *retrieve_last_packet_from_queue(easyav1_t *easyav1, easyav1_packet_queue *queue)
+{
+    if (!queue->count) {
+        return NULL;
+    }
+
+    return &queue->items[(queue->begin + queue->count - 1) % queue->capacity];
+}
+
+static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
+{
+    nestegg_packet *packet = NULL;
+
+    int status = nestegg_read_packet(easyav1->webm.context, &packet);
+
+    if (status < 0) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to read packet.");
+        return NULL;
+    }
+
+    if (status == 0) {
+        easyav1->packets.all_fetched = EASYAV1_TRUE;
+        return NULL;
+    }
+
+    unsigned int track;
+
+    if (nestegg_packet_track(packet, &track)) {
+        nestegg_free_packet(packet);
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track number from packet.");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    int track_type = nestegg_track_type(easyav1->webm.context, track);
+
+    if (track_type == -1) {
+        nestegg_free_packet(packet);
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track type for track %u.", track);
+        return EASYAV1_STATUS_ERROR;
+    } else if (track_type == NESTEGG_TRACK_UNKNOWN) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Skipping unknown track %u of type %d.", track, track_type);
+        nestegg_free_packet(packet);
+        return NULL;
+    }
+
+    easyav1_packet_type type = track_type == NESTEGG_TRACK_VIDEO ? PACKET_TYPE_VIDEO : PACKET_TYPE_AUDIO;
+
+    if (type == PACKET_TYPE_VIDEO &&
+        (easyav1->video.active == EASYAV1_FALSE || easyav1->video.track != track)) {
+        nestegg_free_packet(packet);
+        return NULL;
+    }
+
+    if (type == PACKET_TYPE_AUDIO &&
+        (easyav1->audio.active == EASYAV1_FALSE || easyav1->audio.track != track)) {
+        nestegg_free_packet(packet);
+        return NULL;
+    }
+
+    easyav1_timestamp packet_timestamp;
+
+    if (nestegg_packet_tstamp(packet, &packet_timestamp)) {
+        nestegg_free_packet(packet);
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get packet timestamp.");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    packet_timestamp = internal_timestamp_to_ms(easyav1, packet_timestamp);
+
+    if (type == PACKET_TYPE_AUDIO) {
+        if (easyav1->packets.audio_offset < 0 && -easyav1->packets.audio_offset > packet_timestamp) {
+            nestegg_free_packet(packet);
+            return NULL;
+        }
+
+        if (easyav1->packets.audio_offset > 0 &&
+            packet_timestamp + easyav1->packets.audio_offset > easyav1->duration) {
+            nestegg_free_packet(packet);
+            return NULL;
+        }
+
+        packet_timestamp += easyav1->packets.audio_offset;
+    }
+
+    int has_keyframe = nestegg_packet_has_keyframe(packet);
+    if (has_keyframe == -1) {
+        nestegg_free_packet(packet);
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get keyframe status.");
+        return NULL;
+    }
+
+    easyav1_packet *new_packet = queue_new_packet(easyav1, type == PACKET_TYPE_VIDEO ?
+        &easyav1->packets.video_queue : &easyav1->packets.audio_queue);
+
+    if (!new_packet) {
+        nestegg_free_packet(packet);
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_OUT_OF_MEMORY, "Failed to allocate memory for new packet.");
+        return NULL;
+    }
+
+    new_packet->packet = packet;
+    new_packet->timestamp = packet_timestamp;
+    new_packet->is_keyframe = has_keyframe == NESTEGG_PACKET_HAS_KEYFRAME_TRUE ? EASYAV1_TRUE : EASYAV1_FALSE;
+    new_packet->type = type;
+
+    return new_packet;
+}
+
+static easyav1_status sync_queues(easyav1_t *easyav1)
+{
+    if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+        return EASYAV1_STATUS_FINISHED;
+    }
+
+    if (easyav1->packets.synced == EASYAV1_TRUE || easyav1->packets.all_fetched == EASYAV1_TRUE) {
+        return EASYAV1_STATUS_OK;
+    }
+
+    // Simple packet fetching
+    if (!easyav1->packets.audio_offset || !easyav1->video.active || !easyav1->audio.active) {
+        easyav1_packet *packet = prepare_new_packet(easyav1);
+
+        while (!packet) {
+            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+                return EASYAV1_STATUS_ERROR;
+            }
+
+            if (easyav1->packets.all_fetched == EASYAV1_TRUE) {
+                easyav1->status = EASYAV1_STATUS_FINISHED;
+                break;
+            }
+
+            packet = prepare_new_packet(easyav1);
+        }
+
+        easyav1->packets.synced = EASYAV1_TRUE;
+
+        return EASYAV1_STATUS_OK;
+    }
+
+    // Complex packet fetching, with time syncing between audio and video:
+    // First we check which packet types are decoded earlier than the video timeline
+    // As an example, let's assume audio.offset is -100ms. This means we must fetch audio packets up to 100ms later
+    // than the video packets. This is because audio packets are decoded earlier than video packets.
+    easyav1_packet_type early_packet_type = easyav1->packets.audio_offset < 0 ? PACKET_TYPE_AUDIO : PACKET_TYPE_VIDEO;
+
+    easyav1_packet_queue *early_queue = early_packet_type == PACKET_TYPE_VIDEO ?
+        &easyav1->packets.video_queue : &easyav1->packets.audio_queue;
+    easyav1_packet_queue *late_queue = early_packet_type == PACKET_TYPE_VIDEO ?
+        &easyav1->packets.audio_queue : &easyav1->packets.video_queue;
+
+    // Then we check which packet types are decoded later than the video timeline. Following the above example,
+    // `early_packet` would be an audio packet and `late_packet` would be a video packet.
+    easyav1_packet *early_packet = retrieve_last_packet_from_queue(easyav1, early_queue);
+    easyav1_packet *late_packet = retrieve_packet_from_queue(easyav1, late_queue);
+
+    easyav1_timestamp start_timestamp = early_packet ? early_packet->timestamp : INVALID_TIMESTAMP;
+
+    easyav1_timestamp abs_audio_offset = easyav1->packets.audio_offset < 0 ?
+        -easyav1->packets.audio_offset : easyav1->packets.audio_offset;
+
+    // Keeping with the example, we need to keep fetching audio packets until we reach an audio packet that is at least
+    // 100ms after the video packet.
+    // Alternatively, if we don't find any video packets for the next 100ms, we should stop fetching audio packets,
+    // since we're sure we won't need them.
+    while (easyav1->packets.all_fetched == EASYAV1_FALSE &&
+        (!late_packet || !early_packet || late_packet->timestamp < early_packet->timestamp) &&
+        (!early_packet || early_packet->timestamp - start_timestamp <= abs_audio_offset)) {
+
+        easyav1_packet *packet = prepare_new_packet(easyav1);
+
+        if (!packet) {
+            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+                return EASYAV1_STATUS_ERROR;
+            } else {
+                continue;
+            }
+        }
+
+        if (packet->type == early_packet_type) {
+            early_packet = packet;
+            if (start_timestamp == INVALID_TIMESTAMP) {
+                start_timestamp = packet->timestamp;
+            }
+        } else {
+            late_packet = retrieve_packet_from_queue(easyav1, late_queue);
+        }
+    }
+
+    easyav1->packets.synced = EASYAV1_TRUE;
+
+    if (easyav1->packets.video_queue.count == 0 && easyav1->packets.audio_queue.count == 0 &&
+        easyav1->packets.all_fetched == EASYAV1_TRUE) {
+        easyav1->status = EASYAV1_STATUS_FINISHED;
+    }
+
+    return EASYAV1_STATUS_OK;
+}
+
+static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet)
+{
+    if (!packet) {
+        return;
+    }
+
+    // Should always be true
+    if (packet->packet) {
+        nestegg_free_packet(packet->packet);
+    }
+
+    easyav1_packet_queue *queue = packet->type == PACKET_TYPE_VIDEO ?
+        &easyav1->packets.video_queue : &easyav1->packets.audio_queue;
+
+    // Should never happen
+    if (packet != queue->items + queue->begin) {
+        log(EASYAV1_LOG_LEVEL_WARNING, "Released packet was not at the beginning of the queue.");
+    }
+
+    queue->begin = (queue->begin + 1) % queue->capacity;
+    queue->count--;
+
+    // Resync list position
+    if (queue->count == 0) {
+        queue->begin = 0;
+    }
+
+    memset(packet, 0, sizeof(easyav1_packet));
+
+    if (easyav1->packets.all_fetched == EASYAV1_FALSE) {
+        easyav1->packets.synced = EASYAV1_FALSE;
+    } else {
+        int a = 1;
+        if (easyav1->packets.video_queue.count == 0 && easyav1->packets.audio_queue.count == 0) {
+            easyav1->status = EASYAV1_STATUS_FINISHED;
+        }
+    }
+}
+
+static void release_packets_from_queue(easyav1_t *easyav1, easyav1_packet_queue *queue)
+{
+    while (queue->count) {
+        release_packet_from_queue(easyav1, queue->items + queue->begin);
+    }
+}
+
+static void release_packet_queue(easyav1_t *easyav1, easyav1_packet_queue *queue)
+{
+    release_packets_from_queue(easyav1, queue);
+    free(queue->items);
+    memset(queue, 0, sizeof(easyav1_packet_queue));
+}
+
+
+static easyav1_packet *get_next_packet(easyav1_t *easyav1)
+{
+    if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+        return NULL;
+    }
+
+    if (sync_queues(easyav1) != EASYAV1_STATUS_OK) {
+        return NULL;
+    }
+
+    easyav1_packet *video_packet = retrieve_packet_from_queue(easyav1, &easyav1->packets.video_queue);
+    easyav1_packet *audio_packet = retrieve_packet_from_queue(easyav1, &easyav1->packets.audio_queue);
+
+    if (!video_packet) {
+        return audio_packet;
+    }
+
+    if (!audio_packet) {
+        return video_packet;
+    }
+
+    if (video_packet->timestamp <= audio_packet->timestamp) {
+        return video_packet;
+    }
+    
+    return audio_packet;
+}
+
+
+/*
+ * Decoding functions
+ */
 
 static void free_nothing(const uint8_t *data, void *cookie)
 {}
@@ -719,7 +1098,7 @@ static void callback_video(easyav1_t *easyav1)
     dav1d_picture_unref(&easyav1->video.av1.pic);
 }
 
-static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
+static easyav1_status decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
 {
     // Handle seeking
     if (easyav1->seek == SEEKING_FOR_SQHDR) {
@@ -728,51 +1107,32 @@ static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
         int result = dav1d_parse_sequence_header(&seq_hdr, data, size);
 
         if (result < 0 && result != DAV1D_ERR(ENOENT)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to parse sequence header");
-            return 0;
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to parse sequence header");
+            return EASYAV1_STATUS_ERROR;
         }
 
         if (result == 0) {
             easyav1->seek = SEEKING_FOR_KEYFRAME;
         } else {
-            return 1;
+            return EASYAV1_STATUS_OK;
         }
-    }
-
-    if (easyav1->seek == SEEKING_FOR_KEYFRAME) {
-        int result = nestegg_packet_has_keyframe(easyav1->webm.packet);
-
-        if (result == -1) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get keyframe status.");
-            return 0;
-        }
-
-        if (result == NESTEGG_PACKET_HAS_KEYFRAME_TRUE) {
-            easyav1->seek = SEEKING_FOUND_KEYFRAME;
-        }
-
-        return 1;
-    }
-
-    if (easyav1->seek == SEEKING_FOUND_KEYFRAME) {
-        return 1;
     }
 
     Dav1dData buf = { 0 };
     int result = dav1d_data_wrap(&buf, data, size, free_nothing, 0);
 
     if (result < 0) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to create data buffer");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to create data buffer");
+        return EASYAV1_STATUS_ERROR;
     }
 
     do {
 
         result = dav1d_send_data(easyav1->video.av1.context, &buf);
         if (result < 0 && result != DAV1D_ERR(EAGAIN)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to send data to AV1 decoder");
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to send data to AV1 decoder");
             dav1d_data_unref(&buf);
-            return 0;
+            return EASYAV1_STATUS_ERROR;
         }
 
         Dav1dPicture pic = { 0 };
@@ -787,9 +1147,9 @@ static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
             if (result == DAV1D_ERR(EAGAIN)) {
                 continue;
             }
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get picture from AV1 decoder");
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get picture from AV1 decoder");
             dav1d_data_unref(&buf);
-            return 0;
+            return EASYAV1_STATUS_ERROR;
         }
 
         if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
@@ -822,38 +1182,38 @@ static int decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
 
     dav1d_data_unref(&buf);
 
-    return 1;
+    return EASYAV1_STATUS_OK;
 }
 
 static unsigned int move_audio_buffer(easyav1_t *easyav1, int decoded_samples)
 {
     // If we have too many samples, we need to discard some
-    if (decoded_samples > easyav1->settings.max_audio_samples) {
+    if (decoded_samples > AUDIO_BUFFER_SIZE) {
         easyav1->audio.frame.samples = 0;
-        return decoded_samples - easyav1->settings.max_audio_samples;
+        return decoded_samples - AUDIO_BUFFER_SIZE;
     }
 
-    if (decoded_samples + easyav1->audio.frame.samples <= easyav1->settings.max_audio_samples) {
+    if (decoded_samples + easyav1->audio.frame.samples <= AUDIO_BUFFER_SIZE) {
         return 0;
     }
 
     // If the audio buffer is too small for the incoming samples, we need to move the stored samples to fit the new ones
-    unsigned int samples_to_move = decoded_samples + easyav1->audio.frame.samples - easyav1->settings.max_audio_samples;
+    unsigned int samples_to_move = decoded_samples + easyav1->audio.frame.samples - AUDIO_BUFFER_SIZE;
 
     log(EASYAV1_LOG_LEVEL_INFO, "Audio buffer full, moving %u samples to fit new samples.", samples_to_move);
 
     if (easyav1->settings.interlace_audio) {
         memmove(easyav1->audio.buffer, easyav1->audio.buffer + samples_to_move * easyav1->audio.channels,
-            (easyav1->settings.max_audio_samples - samples_to_move) * easyav1->audio.channels * sizeof(float));
+            (AUDIO_BUFFER_SIZE - samples_to_move) * easyav1->audio.channels * sizeof(float));
     } else {
         for (unsigned int channel = 0; channel < easyav1->audio.channels; channel++) {
-            memmove(easyav1->audio.buffer + channel * easyav1->settings.max_audio_samples,
-                easyav1->audio.buffer + channel * easyav1->settings.max_audio_samples + samples_to_move,
-                (easyav1->settings.max_audio_samples - samples_to_move) * sizeof(float));
+            memmove(easyav1->audio.buffer + channel * AUDIO_BUFFER_SIZE,
+                easyav1->audio.buffer + channel * AUDIO_BUFFER_SIZE + samples_to_move,
+                (AUDIO_BUFFER_SIZE - samples_to_move) * sizeof(float));
         }
     }
 
-    easyav1->audio.frame.samples = easyav1->settings.max_audio_samples - decoded_samples;
+    easyav1->audio.frame.samples = AUDIO_BUFFER_SIZE - decoded_samples;
 
     return 0;
 }
@@ -875,38 +1235,37 @@ static void callback_audio(easyav1_t *easyav1)
     return;
 }
 
-static int decode_audio(easyav1_t *easyav1, uint8_t *data, size_t size)
+static easyav1_status decode_audio(easyav1_t *easyav1, uint8_t *data, size_t size)
 {
     ogg_packet packet = {
         .packet = data,
         .bytes = size
     };
 
-    if (!easyav1->audio.has_samples_in_buffer) {
+    if (easyav1->audio.has_samples_in_buffer == EASYAV1_FALSE) {
         easyav1->audio.frame.samples = 0;
     }
 
     if (easyav1->seek != NOT_SEEKING) {
         if (vorbis_synthesis_trackonly(&easyav1->audio.vorbis.block, &packet) ||
             vorbis_synthesis_blockin(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to process audio packet.");
-            return 0;
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to process audio packet.");
+            return EASYAV1_STATUS_ERROR;
         }
 
         int decoded_samples = vorbis_synthesis_pcmout(&easyav1->audio.vorbis.dsp, 0);
         vorbis_synthesis_read(&easyav1->audio.vorbis.dsp, decoded_samples);
-        return 1;
+        return EASYAV1_STATUS_OK;
     }
 
     if (vorbis_synthesis(&easyav1->audio.vorbis.block, &packet) ||
         vorbis_synthesis_blockin(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to process audio packet.");
-        return 0;
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to process audio packet.");
+        return EASYAV1_STATUS_ERROR;
     }
 
     float **pcm;
     easyav1_audio_frame *frame = &easyav1->audio.frame;
-    unsigned int max_samples = easyav1->settings.max_audio_samples;
     float *buffer = easyav1->audio.buffer;
 
     int decoded_samples = vorbis_synthesis_pcmout(&easyav1->audio.vorbis.dsp, &pcm);
@@ -919,7 +1278,7 @@ static int decode_audio(easyav1_t *easyav1, uint8_t *data, size_t size)
                     buffer[(frame->samples + sample) * easyav1->audio.channels + channel] =
                         pcm[channel][sample + pcm_offset];
                 } else {
-                    buffer[channel * max_samples + frame->samples + sample] = pcm[channel][sample + pcm_offset];
+                    buffer[channel * AUDIO_BUFFER_SIZE + frame->samples + sample] = pcm[channel][sample + pcm_offset];
                 }
             }
         }
@@ -927,8 +1286,8 @@ static int decode_audio(easyav1_t *easyav1, uint8_t *data, size_t size)
         vorbis_synthesis_read(&easyav1->audio.vorbis.dsp, decoded_samples);
 
         frame->samples += decoded_samples;
-        if (frame->samples > max_samples) {
-            frame->samples = max_samples;
+        if (frame->samples > AUDIO_BUFFER_SIZE) {
+            frame->samples = AUDIO_BUFFER_SIZE;
         }
 
         decoded_samples = vorbis_synthesis_pcmout(&easyav1->audio.vorbis.dsp, &pcm);
@@ -936,188 +1295,92 @@ static int decode_audio(easyav1_t *easyav1, uint8_t *data, size_t size)
     }
 
     if (frame->samples > 0) {
-        easyav1->audio.has_samples_in_buffer = 1;
+        easyav1->audio.has_samples_in_buffer = EASYAV1_TRUE;
     }
 
-    return 1;
+    return EASYAV1_STATUS_OK;
 }
 
-static decoder_function get_decoder_function(easyav1_t *easyav1, unsigned int track, int type)
+static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
 {
-    if (type == NESTEGG_TRACK_VIDEO) {
-        if (!easyav1->video.active || track != easyav1->video.track) {
-            return 0;
+    if (packet->type == PACKET_TYPE_VIDEO) {
+        if (easyav1->seek == SEEKING_FOR_KEYFRAME) {
+            if (packet->is_keyframe == EASYAV1_TRUE) {
+                easyav1->seek = SEEKING_FOUND_KEYFRAME;
+            }
+
+            return EASYAV1_STATUS_OK;
         }
-        return decode_video;
-    }
 
-    if (type == NESTEGG_TRACK_AUDIO) {
-        if (!easyav1->audio.active || track != easyav1->audio.track) {
-            return 0;
+        if (easyav1->seek == SEEKING_FOUND_KEYFRAME) {
+            return EASYAV1_STATUS_OK;
         }
-        return decode_audio;
     }
 
-    log(EASYAV1_LOG_LEVEL_INFO, "Skipping unknown track %u of type %d.", track, type);
-
-    return 0;
-}
-
-static int decode_packet(easyav1_t *easyav1)
-{
-    unsigned int track;
-
-    if (nestegg_packet_track(easyav1->webm.packet, &track)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get track number from packet.");
-        return 0;
-    }
-
-    int track_type = nestegg_track_type(easyav1->webm.context, track);
-
-    if (track_type == -1) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get track type for track %u.", track);
-        return 0;
-    }
-
-    decoder_function decode_track = get_decoder_function(easyav1, track, track_type);
-
-    if (!decode_track) {
-        return 1;
-    }
+    decoder_function decode_track = packet->type == PACKET_TYPE_VIDEO ? decode_video : decode_audio;
 
     int chunks;
 
-    if (nestegg_packet_count(easyav1->webm.packet, &chunks)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get packet count");
-        return 0;
+    if (nestegg_packet_count(packet->packet, &chunks)) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get packet count");
+        return EASYAV1_STATUS_ERROR;
     }
 
     for (int chunk = 0; chunk < chunks; chunk++) {
         unsigned char *data;
         size_t size;
 
-        if (nestegg_packet_data(easyav1->webm.packet, chunk, &data, &size)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get data from packet");
-            return 0;
+        if (nestegg_packet_data(packet->packet, chunk, &data, &size)) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get data from packet");
+            return EASYAV1_STATUS_ERROR;
         }
 
-        if (!decode_track(easyav1, data, size)) {
-            return 0;
+        if (decode_track(easyav1, data, size) == EASYAV1_STATUS_ERROR) {
+            return EASYAV1_STATUS_ERROR;
         }
     }
 
-    return 1;
-}
-
-static void release_packet(easyav1_t *easyav1)
-{
-    if (!easyav1->webm.packet) {
-        return;
-    }
-    nestegg_free_packet(easyav1->webm.packet);
-    easyav1->webm.packet = 0;
-}
-
-static int decode_cycle(easyav1_t *easyav1)
-{
-    if (easyav1->is_finished) {
-        return 0;
+    if (packet->type == PACKET_TYPE_VIDEO && easyav1->seek == SEEKING_FOR_KEYFRAME &&
+        packet->is_keyframe == EASYAV1_TRUE) {
+        easyav1->seek = SEEKING_FOUND_KEYFRAME;
     }
 
-    int packet_decoded = decode_packet(easyav1);
-
-    release_packet(easyav1);
-
-    return packet_decoded;
+    return EASYAV1_STATUS_OK;
 }
 
-int easyav1_decode_next(easyav1_t *easyav1)
+easyav1_status easyav1_decode_next(easyav1_t *easyav1)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return 0;
+        return EASYAV1_STATUS_ERROR;
     }
 
-    easyav1_timestamp timestamp = get_next_packet(easyav1);
-
-    if (timestamp == INVALID_TIMESTAMP) {
-        return 0;
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        return EASYAV1_STATUS_ERROR;
     }
 
-    easyav1->timestamp = timestamp;
+    easyav1_packet *packet = get_next_packet(easyav1);
 
-    if (!decode_cycle(easyav1)) {
-        return 0;
+    if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+        return EASYAV1_STATUS_FINISHED;
     }
 
-    callback_video(easyav1);
-    callback_audio(easyav1);
+    if (!packet) {
+        return EASYAV1_STATUS_ERROR;
+    }
 
-    return 1;
+    easyav1->timestamp = packet->timestamp;
+
+    easyav1_status status = decode_packet(easyav1, packet);
+    release_packet_from_queue(easyav1, packet);
+
+    if (status == EASYAV1_STATUS_OK) {
+        callback_video(easyav1);
+        callback_audio(easyav1);
+    }
+
+    return status;
 }
-
-int easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
-{
-    if (!easyav1) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return 0;
-    }
-
-    if (timestamp <= easyav1->timestamp) {
-        return 1;
-    }
-
-    // Skip to timestamp if too far behind
-    if (timestamp - easyav1->timestamp > DECODE_UNTIL_SKIP_MS) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Decoder too far behind at %llu, skipping to requested timestamp %llu.",
-            easyav1->timestamp, timestamp);
-
-        // Leave 30ms difference to get something actually decoded on this run
-        easyav1_seek_to_timestamp(easyav1, timestamp - 30);
-    }
-
-    while (1) {
-        easyav1_timestamp current = get_next_packet(easyav1);
-
-        if (current == INVALID_TIMESTAMP) {
-            return 0;
-        }
-
-        if (current > timestamp) {
-            break;
-        }
-
-        easyav1->timestamp = current;
-
-        if (!decode_cycle(easyav1)) {
-            return 0;
-        }
-    }
-
-    easyav1->timestamp = timestamp;
-
-    callback_video(easyav1);
-    callback_audio(easyav1);
-
-    return 1;
-}
-
-int easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
-{
-    while (time > DECODE_UNTIL_SKIP_MS) {
-        if (!easyav1_decode_until(easyav1, easyav1->timestamp + DECODE_UNTIL_SKIP_MS)) {
-            return 0;
-        }
-        time -= DECODE_UNTIL_SKIP_MS;
-    }
-
-    return easyav1_decode_until(easyav1, easyav1->timestamp + time);
-}
-
-
-/*
- * Seeking functions
- */
 
 static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
@@ -1134,8 +1397,10 @@ static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1
     do {
         if (nestegg_get_cue_point(easyav1->webm.context, cluster, -1, &start_pos, &end_pos, &cue_timestamp)) {
             log(EASYAV1_LOG_LEVEL_WARNING, "Failed to get cue point %u.", cluster);
-            return 0;
+            return closest;
         }
+
+        cue_timestamp = internal_timestamp_to_ms(easyav1, cue_timestamp);
 
         if (cue_timestamp >= timestamp) {
             break;
@@ -1149,15 +1414,91 @@ static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1
     return closest;
 }
 
-int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
+easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return 0;
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (timestamp <= easyav1->timestamp) {
+        return EASYAV1_STATUS_OK;
+    }
+
+    // Skip to timestamp if too far behind and at different cue points
+    if (easyav1->settings.skip_unprocessed_frames == EASYAV1_TRUE &&
+        timestamp - easyav1->timestamp > DECODE_UNTIL_SKIP_MS &&
+        get_closest_cue_point(easyav1, easyav1->timestamp) < get_closest_cue_point(easyav1, timestamp - 30)) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Decoder too far behind at %llu, skipping to requested timestamp %llu.",
+            easyav1->timestamp, timestamp);
+
+        // Leave 30ms difference to get something actually decoded on this run
+        easyav1_seek_to_timestamp(easyav1, timestamp - 30);
+    }
+
+    easyav1_status status = easyav1->status;
+
+    while (status == EASYAV1_STATUS_OK) {
+        easyav1_packet *packet = get_next_packet(easyav1);
+
+        if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+            status = EASYAV1_STATUS_FINISHED;
+            break;
+        }
+
+        if (packet->timestamp >= timestamp) {
+            break;
+        }
+
+        if (!packet) {
+            return EASYAV1_STATUS_ERROR;
+        }
+
+        easyav1->timestamp = packet->timestamp;
+
+        easyav1_status status = decode_packet(easyav1, packet);
+        release_packet_from_queue(easyav1, packet);
+    }
+
+    if (status == EASYAV1_STATUS_OK) {
+        easyav1->timestamp = timestamp;
+    }
+
+    if (status != EASYAV1_STATUS_ERROR) {
+        callback_video(easyav1);
+        callback_audio(easyav1);
+    }
+
+    return status;
+}
+
+easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
+{
+    return easyav1_decode_until(easyav1, easyav1->timestamp + time);
+}
+
+
+/*
+ * Seeking functions
+ */
+
+easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        return EASYAV1_STATUS_ERROR;
     }
 
     if (timestamp == easyav1->timestamp) {
-        return 1;
+        return EASYAV1_STATUS_OK;
     }
 
     easyav1_timestamp duration = easyav1_get_duration(easyav1);
@@ -1168,11 +1509,11 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
     }
 
     easyav1_timestamp original_timestamp = easyav1->timestamp;
-    easyav1_timestamp corrected_timestamp = get_closest_cue_point(easyav1, ms_to_ns(timestamp));
+    easyav1_timestamp corrected_timestamp = get_closest_cue_point(easyav1, timestamp);
 
     unsigned int track = 0;
 
-    if (easyav1->video.active) {
+    if (easyav1->video.active == EASYAV1_TRUE) {
         track = easyav1->video.track;
     } else {
         track = easyav1->audio.track;
@@ -1186,22 +1527,27 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
      */
     easyav1_timestamp last_keyframe_timestamp = 0;
 
-    int audio_is_active = easyav1->audio.active;
+    easyav1_bool audio_is_active = easyav1->audio.active;
 
-    easyav1->is_finished = 0;
+    easyav1->status = EASYAV1_STATUS_OK;
 
     for (int pass = 0; pass < 2; pass++) {
 
-        easyav1->timestamp = ns_to_ms(corrected_timestamp);
+        easyav1->timestamp = corrected_timestamp;
 
-        if (nestegg_track_seek(easyav1->webm.context, track, corrected_timestamp)) {
-            log(EASYAV1_LOG_LEVEL_ERROR, "Failed to seek to requested timestamp %u.", easyav1->timestamp);
-            return 0;
+        if (nestegg_track_seek(easyav1->webm.context, track, ms_to_internal_timestmap(easyav1, corrected_timestamp))) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_IO_ERROR, "Failed to seek to requested timestamp %u.", easyav1->timestamp);
+            return EASYAV1_STATUS_ERROR;
         }
 
-        release_packet(easyav1);
+        release_packets_from_queue(easyav1, &easyav1->packets.video_queue);
+        release_packets_from_queue(easyav1, &easyav1->packets.audio_queue);
 
-        if (easyav1->video.active) {
+        easyav1->packets.synced = EASYAV1_FALSE;
+        easyav1->packets.all_fetched = EASYAV1_FALSE;
+        easyav1->status = EASYAV1_STATUS_OK;
+
+        if (easyav1->video.active == EASYAV1_TRUE) {
             dav1d_picture_unref(&easyav1->video.av1.pic);
             dav1d_flush(easyav1->video.av1.context);
             easyav1->seek = SEEKING_FOR_SQHDR;
@@ -1218,30 +1564,30 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
 
             // No need to decode audio at all on first pass
             if (pass == 0) {
-                easyav1->audio.active = 0;
+                easyav1->audio.active = EASYAV1_FALSE;
             } else {
-                easyav1->audio.active = 1;
+                easyav1->audio.active = EASYAV1_TRUE;
 
                 vorbis_synthesis_restart(&easyav1->audio.vorbis.dsp);
-                easyav1->audio.has_samples_in_buffer = 0;
+                easyav1->audio.has_samples_in_buffer = EASYAV1_FALSE;
             }
         }
 
         while (1) {
-            easyav1_timestamp current = get_next_packet(easyav1);
+            easyav1_packet *packet = get_next_packet(easyav1);
 
-            if (current == INVALID_TIMESTAMP) {
-                return 0;
+            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+                return EASYAV1_STATUS_ERROR;
             }
 
-            easyav1->timestamp = current;
+            easyav1->timestamp = packet->timestamp;
 
             if (pass == 1) {
-                if (current >= last_keyframe_timestamp) {
+                if (packet->timestamp >= last_keyframe_timestamp) {
 
                     // If fast seeking is enabled, we don't decode until we find the correct timestamp, rather we
                     // resume playing immediately after we get to the last keyframe before the requested timestamp
-                    if (easyav1->settings.use_fast_seeking) {
+                    if (easyav1->settings.use_fast_seeking == EASYAV1_TRUE) {
                         easyav1->seek = NOT_SEEKING;
                         break;
                     } else {
@@ -1252,16 +1598,18 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
                 }
             }
 
-            if (easyav1->timestamp >= timestamp || easyav1->is_finished) {
+            if (easyav1->timestamp >= timestamp || easyav1->status == EASYAV1_STATUS_FINISHED) {
 
                 // If we couldn't find a keyframe on the first pass, we need to seek again,
                 // starting on the previous cue point
-                if (pass == 0 && last_keyframe_timestamp < ns_to_ms(corrected_timestamp)) {
+                if (pass == 0 && last_keyframe_timestamp < corrected_timestamp) {
 
                     // No keyframe found from the beginning of the file - this shouldn't happen, but just in case
                     if (corrected_timestamp == 0) {
-                        log(EASYAV1_LOG_LEVEL_ERROR, "Unable to seek, no sequence header or keyframes found. Aborting.");
-                        return 0;
+                        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR,
+                            "Unable to seek, no sequence header or keyframes found. Aborting.");
+                        release_packet_from_queue(easyav1, packet);
+                        return EASYAV1_STATUS_ERROR;
                     }
 
                     corrected_timestamp = get_closest_cue_point(easyav1, corrected_timestamp);
@@ -1273,39 +1621,42 @@ int easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
                 break;
             }
 
-            if (!decode_cycle(easyav1)) {
-                return 0;
+            if (decode_packet(easyav1, packet) == EASYAV1_STATUS_ERROR) {
+                release_packet_from_queue(easyav1, packet);
+                return EASYAV1_STATUS_ERROR;
             }
 
             if (pass == 0 && easyav1->seek == SEEKING_FOUND_KEYFRAME) {
-                last_keyframe_timestamp = current;
+                last_keyframe_timestamp = packet->timestamp;
                 easyav1->seek = SEEKING_FOR_KEYFRAME;
             }
+
+            release_packet_from_queue(easyav1, packet);
         }
     }
 
-    easyav1->is_finished = 0;
+    easyav1->status = EASYAV1_STATUS_OK;
     
     log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->timestamp, original_timestamp);
 
     return 1;
 }
 
-int easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time)
+easyav1_status easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return 0;
+        return EASYAV1_STATUS_ERROR;
     }
 
     return easyav1_seek_to_timestamp(easyav1, easyav1->timestamp + time);
 }
 
-int easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
+easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return 0;
+        return EASYAV1_STATUS_ERROR;
     }
 
     if (time > easyav1->timestamp) {
@@ -1320,11 +1671,11 @@ int easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
  * Output functions
  */
 
-int easyav1_has_video_frame(const easyav1_t *easyav1)
+easyav1_bool easyav1_has_video_frame(const easyav1_t *easyav1)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return EASYAV1_FALSE;
     }
 
     return easyav1->video.has_picture_to_output;
@@ -1334,21 +1685,21 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return NULL;
     }
 
-    if (!easyav1->video.has_picture_to_output) {
-        return 0;
+    if (easyav1->video.has_picture_to_output == EASYAV1_FALSE) {
+        return NULL;
     }
 
-    easyav1->video.has_picture_to_output = 0;
+    easyav1->video.has_picture_to_output = EASYAV1_FALSE;
     Dav1dPicture *pic = &easyav1->video.av1.pic;
 
     if (pic->p.layout != DAV1D_PIXEL_LAYOUT_I420) {
         // TODO convert on request or on unsupported type
         dav1d_picture_unref(pic);
         log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout");
-        return 0;
+        return NULL;
     }
 
     easyav1_video_frame frame = {
@@ -1366,37 +1717,37 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
 
     easyav1->video.frame = frame;
 
-    easyav1->video.has_picture_to_output = 0;
     return &easyav1->video.frame;
 }
 
-int easyav1_is_audio_buffer_filled(const easyav1_t *easyav1)
+easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return EASYAV1_FALSE;
     }
 
-    return easyav1->audio.has_samples_in_buffer && easyav1->audio.frame.samples == easyav1->settings.max_audio_samples;
+    return easyav1->audio.has_samples_in_buffer && easyav1->audio.frame.samples == AUDIO_BUFFER_SIZE ?
+        EASYAV1_TRUE : EASYAV1_FALSE;
 }
 
 const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return NULL;
     }
 
     if (!easyav1->audio.has_samples_in_buffer) {
-        return 0;
+        return NULL;
     }
 
-    easyav1->audio.has_samples_in_buffer = 0;
+    easyav1->audio.has_samples_in_buffer = EASYAV1_FALSE;
 
     easyav1_audio_frame *frame = &easyav1->audio.frame;
 
     if (frame->samples == 0) {
-        return 0;
+        return NULL;
     }
 
     frame->bytes = frame->samples * sizeof(float);
@@ -1428,21 +1779,21 @@ easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1)
     return easyav1->timestamp;
 }
 
-int easyav1_has_video_track(const easyav1_t *easyav1)
+easyav1_bool easyav1_has_video_track(const easyav1_t *easyav1)
 {
     if (!easyav1 || !easyav1->webm.context) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return EASYAV1_FALSE;
     }
 
     return easyav1->video.active;
 }
 
-int easyav1_has_audio_track(const easyav1_t *easyav1)
+easyav1_bool easyav1_has_audio_track(const easyav1_t *easyav1)
 {
     if (!easyav1 || !easyav1->webm.context) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return EASYAV1_FALSE;
     }
 
     return easyav1->audio.active;
@@ -1455,7 +1806,7 @@ unsigned int easyav1_get_video_width(const easyav1_t *easyav1)
         return 0;
     }
 
-    return easyav1->video.active ? easyav1->video.width : 0;
+    return easyav1->video.active == EASYAV1_TRUE ? easyav1->video.width : 0;
 }
 
 unsigned int easyav1_get_video_height(const easyav1_t *easyav1)
@@ -1465,7 +1816,7 @@ unsigned int easyav1_get_video_height(const easyav1_t *easyav1)
         return 0;
     }
 
-    return easyav1->video.active ? easyav1->video.height : 0;
+    return easyav1->video.active == EASYAV1_TRUE ? easyav1->video.height : 0;
 }
 
 unsigned int easyav1_get_audio_channels(const easyav1_t *easyav1)
@@ -1475,7 +1826,7 @@ unsigned int easyav1_get_audio_channels(const easyav1_t *easyav1)
         return 0;
     }
 
-    return easyav1->audio.active ? easyav1->audio.channels : 0;
+    return easyav1->audio.active == EASYAV1_TRUE ? easyav1->audio.channels : 0;
 }
 
 unsigned int easyav1_get_audio_sample_rate(const easyav1_t *easyav1)
@@ -1485,7 +1836,7 @@ unsigned int easyav1_get_audio_sample_rate(const easyav1_t *easyav1)
         return 0;
     }
 
-    return easyav1->audio.active ? easyav1->audio.sample_rate : 0;
+    return easyav1->audio.active == EASYAV1_TRUE ? easyav1->audio.sample_rate : 0;
 }
 
 easyav1_timestamp easyav1_get_duration(const easyav1_t *easyav1)
@@ -1495,24 +1846,17 @@ easyav1_timestamp easyav1_get_duration(const easyav1_t *easyav1)
         return 0;
     }
 
-    easyav1_timestamp duration;
-
-    if (nestegg_duration(easyav1->webm.context, &duration)) {
-        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to get duration");
-        return 0;
-    }
-
-    return ns_to_ms(duration);
+    return easyav1->duration;
 }
 
-int easyav1_is_finished(const easyav1_t *easyav1)
+easyav1_bool easyav1_is_finished(const easyav1_t *easyav1)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
-        return 0;
+        return EASYAV1_FALSE;
     }
 
-    return easyav1->is_finished;
+    return easyav1->status == EASYAV1_STATUS_FINISHED ? EASYAV1_TRUE : EASYAV1_FALSE;
 }
 
 
@@ -1522,7 +1866,7 @@ int easyav1_is_finished(const easyav1_t *easyav1)
 
 void easyav1_destroy(easyav1_t **handle)
 {
-    easyav1_t *easyav1 = 0;
+    easyav1_t *easyav1 = NULL;
 
     if (!handle) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
@@ -1553,7 +1897,8 @@ void easyav1_destroy(easyav1_t **handle)
         free(easyav1->audio.frame.pcm.deinterlaced);
     }
 
-    release_packet(easyav1);
+    release_packet_queue(easyav1, &easyav1->packets.video_queue);
+    release_packet_queue(easyav1, &easyav1->packets.audio_queue);
 
     if (easyav1->webm.context) {
         nestegg_destroy(easyav1->webm.context);
@@ -1574,5 +1919,5 @@ void easyav1_destroy(easyav1_t **handle)
     }
 
     free(easyav1);
-    *handle = 0;
+    *handle = NULL;
 }
