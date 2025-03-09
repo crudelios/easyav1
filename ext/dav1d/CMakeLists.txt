@@ -1,9 +1,15 @@
 # Script to build dav1d with CMake
-# I, Miku AuahDark grant you permission to use this script under
-# BSD-2 Clause license
-# This CMake also depends on TargetArch.cmake which is shipped along with this
-# repository, modified to detect AArch64. To get the unmodified version, visit
+# This script is based on the original script by Miku AuahDark, available at
+# https://github.com/MikuAuahDark/dav1d-cmake
+#
+# This script was heavily edited by me - José Cadete - to support david up to v1.5.1
+#
+# This CMake script also depends on TargetArch.cmake which is now bundled in this file,
+# modified to detect AArch64, Risc-V and Loongarch. To get the unmodified version, visit
 # https://github.com/axr/solar-cmake/blob/73cfea0/TargetArch.cmake
+#
+# Both the original script and the original TargetArch.cmake are licensed under the BSD-2-Clause license.
+# My modifications to this file and to TargetArch.cmake are licensed under the same BSD-2-Clause license.
 
 cmake_minimum_required(VERSION 3.8.0)
 

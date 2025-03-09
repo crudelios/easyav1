@@ -1425,6 +1425,10 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         return EASYAV1_STATUS_ERROR;
     }
 
+    if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+        return EASYAV1_STATUS_FINISHED;
+    }
+
     if (timestamp <= easyav1->timestamp) {
         return EASYAV1_STATUS_OK;
     }

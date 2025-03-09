@@ -108,7 +108,6 @@ static int init_easyav1(const char *filename)
     easyav1_settings settings = easyav1_default_settings();
     settings.callbacks.video = video_callback;
     settings.callbacks.audio = audio_callback;
-    settings.log_level = EASYAV1_LOG_LEVEL_INFO;
     settings.audio_offset_time = -22050 / 2048;
     data.easyav1 = easyav1_init_from_filename(filename, &settings);
     if (!data.easyav1) {
@@ -244,8 +243,6 @@ static int init_fonts(void)
         SDL_FreeSurface(font_surface);
         return 0;
     }
-
-    SDL_Rect rect = { 0, 0, 1, 1 };
 
     for (int i = 0; i < FONT_IMAGE_COLS * FONT_IMAGE_ROWS; i++) {
         font_positions[i].x = i % FONT_IMAGE_COLS * FONT_WIDTH;
@@ -457,7 +454,7 @@ static void handle_input(void)
             }
         }
 
-        if (!mouse_is_hovering_timestamp && !mouse_was_pressed) {
+        if (!mouse_is_hovering_timestamp && !mouse_was_pressed && !easyav1_is_finished(data.easyav1)) {
             data.playback.paused = !data.playback.paused;
             data.playback.last_change = SDL_GetTicks64();
         }
@@ -701,7 +698,7 @@ int main(int argc, char **argv)
     easyav1_timestamp last_timestamp = SDL_GetTicks64();
     easyav1_timestamp current_timestamp = last_timestamp;
 
-    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) == EASYAV1_STATUS_OK) {
+    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
         handle_input();
 
         if (data.quit) {
@@ -716,7 +713,7 @@ int main(int argc, char **argv)
 
         draw_time_bar();
         draw_play_pause_animation();
-        
+
         SDL_RenderPresent(data.SDL.renderer);
 
         last_timestamp = current_timestamp;

@@ -20,28 +20,28 @@
  *         return 1;
  *     }
  *
- *     if (easyav1_has_video_track(easyav1)) {
+ *     if (easyav1_has_video_track(easyav1) == EASYAV1_TRUE) {
  *         printf("Video size: %ux%u\n", easyav1_get_video_width(easyav1), easyav1_get_video_height(easyav1));
  *     }
  *
- *     if (easyav1_has_audio_track(easyav1)) {
+ *     if (easyav1_has_audio_track(easyav1) == EASYAV1_TRUE) {
  *         printf("Audio sample rate: %u\n", easyav1_get_audio_sample_rate(easyav1));
  *         printf("Audio channels: %u\n", easyav1_get_audio_channels(easyav1));
  *     }
  *
- *     while (easyav1_decode_next(easyav1)) {
- *          if (easyav1_has_video_frame(easyav1)) {
+ *     while (easyav1_decode_next(easyav1) == EASYAV1_STATUS_OK) {
+ *          if (easyav1_has_video_frame(easyav1) == EASYAV1_TRUE) {
  *             const easyav1_video_frame *video_frame = easyav1_get_video_frame(easyav1);
  *             // Do something with the video frame.
  *         }
  *
- *         if (easyav1_has_audio_frame(easyav1)) {
+ *         if (easyav1_has_audio_frame(easyav1) == EASYAV1_TRUE) {
  *             const easyav1_audio_frame *audio_frame = easyav1_get_audio_frame(easyav1);
  *             // Do something with the audio frame.
  *         }
  *     }
  *
- *     if (easyav1_is_finished(easyav1)) {
+ *     if (easyav1_is_finished(easyav1) == EASYAV1_TRUE) {
  *         printf("Finished decoding.\n");
  *     } else {
  *         printf("Failed to decode.\n");
