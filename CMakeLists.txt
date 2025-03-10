@@ -7,6 +7,8 @@ set(CMAKE_C_STANDARD 99)
 
 set(BUILD_SHARED_LIBS OFF)
 
+option(BUILD_TOOLS "Build the executable tools that use the library" ON)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 #IF(WIN32)
@@ -43,10 +45,6 @@ if(NOT APPLE AND MATH_LIBRARY)
     target_link_libraries(${PROJECT_NAME} ${MATH_LIBRARY})
 endif()
 
-add_executable("${PROJECT_NAME}_player" "src/main.c")
-target_include_directories(${PROJECT_NAME} PUBLIC
-	"src"
-	"ext"
-	${SDL2_INCLUDE_DIR}
-)
-target_link_libraries("${PROJECT_NAME}_player" "${PROJECT_NAME}" ${SDL2_LIBRARY})
+if (BUILD_TOOLS)
+	add_subdirectory("tools")
+endif()

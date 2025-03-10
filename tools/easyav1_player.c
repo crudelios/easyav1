@@ -661,28 +661,25 @@ static void draw_play_pause_animation(void)
 
 int main(int argc, char **argv)
 {
-    const char *filename = "../data/intro_audio.webm";
     if (argc < 2) {
         printf("Usage: %s <filename>\n", argv[0]);
 
-        // return 1;
-    } else {
-        filename = argv[1];
+        return 1;
     }
 
-    init_easyav1(filename);
+    init_easyav1(argv[1]);
 
     if (!data.easyav1) {
         printf("Failed to initialize easyav1.\n");
 
-        return 1;
+        return 2;
     }
 
     if (!init_sdl()) {
         printf("Failed to initialize SDL.\n");
         easyav1_destroy(&data.easyav1);
 
-        return 2;
+        return 3;
     }
 
     if (!init_fonts()) {
@@ -690,7 +687,7 @@ int main(int argc, char **argv)
         quit_sdl();
         easyav1_destroy(&data.easyav1);
 
-        return 3;
+        return 4;
     }
 
     init_ui();

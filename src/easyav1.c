@@ -74,6 +74,8 @@ typedef struct easyav1_t {
         unsigned int width;
         unsigned int height;
 
+        uint64_t processed_frames;
+
         easyav1_video_frame frame;
 
     } video;
@@ -1173,6 +1175,7 @@ static easyav1_status decode_video(easyav1_t *easyav1, uint8_t *data, size_t siz
         pic.m.timestamp = easyav1->timestamp;
         easyav1->video.av1.pic = pic;
         easyav1->video.has_picture_to_output = 1;
+        easyav1->video.processed_frames++;
 
         if (!easyav1->settings.skip_unprocessed_frames) {
             callback_video(easyav1);
@@ -1722,6 +1725,16 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
     easyav1->video.frame = frame;
 
     return &easyav1->video.frame;
+}
+
+uint64_t easyav1_get_total_video_frames_processed(const easyav1_t *easyav1)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
+        return 0;
+    }
+
+    return easyav1->video.processed_frames;
 }
 
 easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1)

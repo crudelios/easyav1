@@ -539,6 +539,15 @@ easyav1_bool easyav1_has_video_frame(const easyav1_t *easyav1);
 const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1);
 
 /*
+ * Gets the total number of video frames processed up to this point.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return The total number of video frames processed.
+ */
+uint64_t easyav1_get_total_video_frames_processed(const easyav1_t *easyav1);
+
+/*
  * Indicates whether the audio buffer is filled (i.e. the queued samples equal the `max_audio_samples` setting).
  *
  * @param easyav1 The easyav1 instance.
