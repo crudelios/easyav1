@@ -11,7 +11,7 @@
 # Both the original script and the original TargetArch.cmake are licensed under the BSD-2-Clause license.
 # My modifications to this file and to TargetArch.cmake are licensed under the same BSD-2-Clause license.
 
-cmake_minimum_required(VERSION 3.8.0)
+cmake_minimum_required(VERSION 3.8.0...4.0.0)
 
 set(CMAKE_C_STANDARD 99)
 
