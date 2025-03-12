@@ -824,7 +824,7 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
     if (nestegg_packet_track(packet, &track)) {
         nestegg_free_packet(packet);
         LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track number from packet.");
-        return EASYAV1_STATUS_ERROR;
+        return NULL;
     }
 
     int track_type = nestegg_track_type(easyav1->webm.context, track);
@@ -832,7 +832,7 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
     if (track_type == -1) {
         nestegg_free_packet(packet);
         LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track type for track %u.", track);
-        return EASYAV1_STATUS_ERROR;
+        return NULL;
     } else if (track_type == NESTEGG_TRACK_UNKNOWN) {
         log(EASYAV1_LOG_LEVEL_INFO, "Skipping unknown track %u of type %d.", track, track_type);
         nestegg_free_packet(packet);
@@ -858,7 +858,7 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
     if (nestegg_packet_tstamp(packet, &packet_timestamp)) {
         nestegg_free_packet(packet);
         LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get packet timestamp.");
-        return EASYAV1_STATUS_ERROR;
+        return NULL;
     }
 
     packet_timestamp = internal_timestamp_to_ms(easyav1, packet_timestamp);
@@ -1322,14 +1322,14 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
 
     decoder_function decode_track = packet->type == PACKET_TYPE_VIDEO ? decode_video : decode_audio;
 
-    int chunks;
+    unsigned int chunks;
 
     if (nestegg_packet_count(packet->packet, &chunks)) {
         LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get packet count");
         return EASYAV1_STATUS_ERROR;
     }
 
-    for (int chunk = 0; chunk < chunks; chunk++) {
+    for (unsigned int chunk = 0; chunk < chunks; chunk++) {
         unsigned char *data;
         size_t size;
 

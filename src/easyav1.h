@@ -76,7 +76,7 @@ typedef struct easyav1_t easyav1_t;
 /*
  * Timestamp type. This is used for all timestamp related operations.
  */
-typedef uint64_t easyav1_timestamp;
+typedef unsigned long long easyav1_timestamp;
 
 
 /*

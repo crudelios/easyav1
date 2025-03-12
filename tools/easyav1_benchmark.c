@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -38,7 +39,7 @@ void benchmark_clock_reset_timer(benchmark_clock *clock)
 #include <sys/time.h>
 
 typedef struct {
-    struct timeval start;
+    struct timespec start;
 } benchmark_clock;
 
 void benchmark_clock_start(benchmark_clock *clock)
@@ -50,13 +51,13 @@ void benchmark_clock_start(benchmark_clock *clock)
 
 int64_t benchmark_clock_get_elapsed_time(benchmark_clock *clock)
 {
-    struct timeval current_time;
+    struct timespec current_time;
     clock_gettime(CLOCK_MONOTONIC, &current_time);
 
-    int64_t elapsed = (current_time.tv_sec - clock->start.tv_sec) * 1000;
-    elapsed += (current_time.tv_usec - clock->start.tv_usec) / 1000;
+    int64_t elapsed = (current_time.tv_sec - clock->start.tv_sec) * 1000000000 +
+                      current_time.tv_nsec - clock->start.tv_nsec;
 
-    return elapsed;
+    return elapsed / 1000000;
 }
 
 void benchmark_clock_reset_timer(benchmark_clock *clock)
@@ -130,7 +131,7 @@ int main(int argc, const char **argv)
 
             easyav1_timestamp current_timestamp = easyav1_get_current_timestamp(easyav1);
 
-            int printed = printf("\rDecoding (%lu:%02lu): Decoded %lu frames in %lu ms (%lf fps average).",
+            int printed = printf("\rDecoding (%llu:%02llu): Decoded %llu frames in %lld ms (%lf fps average).",
                 current_timestamp / 60000, (current_timestamp / 1000) % 60, total_frames, total_time, fps);
 
             while (printed_chars > printed) {
@@ -168,7 +169,7 @@ int main(int argc, const char **argv)
         printed_chars--;
     }
 
-    printf("\nSlowest frame: #%lu (at %lu:%02lu) - %lld milliseconds (%lf fps).\n", slowest_frame,
+    printf("\nSlowest frame: #%llu (at %llu:%02llu) - %lld milliseconds (%lf fps).\n", slowest_frame,
         slowest_frame_timestamp / 60000, (slowest_frame_timestamp / 1000) % 60,
         largest_frame_time, 1000 / (double)largest_frame_time);
 

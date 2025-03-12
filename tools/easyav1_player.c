@@ -332,10 +332,10 @@ static void init_ui(void)
 static void get_timestamp_string(easyav1_timestamp timestamp, char *buffer, size_t size)
 {
     if (timestamp > 3600000) {
-        snprintf(buffer, size, "%lu:%02lu:%02lu", timestamp / 3600000,
+        snprintf(buffer, size, "%llu:%02llu:%02llu", timestamp / 3600000,
             timestamp / 60000, (timestamp / 1000) % 60);
     } else {
-        snprintf(buffer, size, "%lu:%02lu", timestamp / 60000, (timestamp / 1000) % 60);
+        snprintf(buffer, size, "%llu:%02llu", timestamp / 60000, (timestamp / 1000) % 60);
     }
 }
 
@@ -414,7 +414,7 @@ static void handle_input(void)
     int mouse_moved = 0;
     int mouse_was_pressed = data.mouse.pressed;
 
-    data.mouse.pressed = SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON(SDL_BUTTON_LEFT) != 0;
+    data.mouse.pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
 
     if (mouse_x != data.mouse.x || mouse_y != data.mouse.y) {
         if ((mouse_x >= 0 && mouse_y >= 0 && mouse_x < width && mouse_y < height) ||
@@ -595,8 +595,8 @@ static void draw_play_icon(unsigned int size, uint8_t opacity)
         size = MAX_PLAY_BUTTON_SIZE;
     }
 
-    unsigned int width;
-    unsigned int height;
+    int width;
+    int height;
     SDL_GetWindowSize(data.SDL.window, &width, &height);
 
     int x = (width - size) / 2;
@@ -624,8 +624,8 @@ static void draw_pause_icon(unsigned int size, uint8_t opacity)
         size = MAX_PLAY_BUTTON_SIZE;
     }
 
-    unsigned int width;
-    unsigned int height;
+    int width;
+    int height;
     SDL_GetWindowSize(data.SDL.window, &width, &height);
 
     int x = (width - size) / 2;

@@ -115,7 +115,7 @@ function(target_architecture output_var)
         # since the program itself never needs to be run (only the compiler/preprocessor)
 
         set(archdetect_c_code "
-            #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(_M_ARM) || defined(_M_ARM64)
+            #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(_M_ARM) || defined(_M_ARM64) || defined(__aarch64__)
                 #if defined(__aarch64__)  || defined(_M_ARM64)
                     #error cmake_ARCH aarch64
                 #elif defined(__ARM_ARCH_7__) \\
@@ -159,8 +159,8 @@ function(target_architecture output_var)
                 #else
                     #error cmake_ARCH riscv32
                 #endif
-            #elif defined(__loongarch__) || defined(_LP64) || defined(__LP64__)
-                #if defined(__loongarch_lp64)
+            #elif defined(__loongarch__)
+                #if defined(__loongarch_lp64) || defined(_LP64) || defined(__LP64__)
                     #error cmake_ARCH loongarch64
                 #else
                     #error cmake_ARCH loongarch32
@@ -201,7 +201,6 @@ target_architecture(PROCESSOR)
 if(PROCESSOR STREQUAL "i386" OR PROCESSOR STREQUAL "x86_64")
     set(ARCH_X86 TRUE)
 endif()
-
 
 # Configuration file generation
 
@@ -794,6 +793,7 @@ add_to_configure_file("config.h" "HAVE_DOTPROD" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_I8MM" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_SVE" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_SVE2" TYPE_BOOLEAN)
+add_to_configure_file("config.h" "AS_ARCH_LEVEL" TYPE_EXPRESSION)
 
 if(ARCH_X86)
     if(${PROCESSOR} STREQUAL "x86_64")
