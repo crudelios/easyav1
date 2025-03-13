@@ -52,7 +52,7 @@ typedef struct {
     size_t begin;
 } easyav1_packet_queue;
 
-typedef struct easyav1_t {
+struct easyav1_t {
 
     struct {
         nestegg *context;
@@ -129,7 +129,7 @@ typedef struct easyav1_t {
 
     easyav1_status status;
 
-} easyav1_t;
+};
 
 typedef struct {
     uint8_t *data;

@@ -646,8 +646,6 @@ endif()
 # ASM specific stuff
 #
 
-# TODO gaspp
-
 if(${PROCESSOR} STREQUAL "aarch64")
     set(ARCH_AARCH64 1)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gastest.S "
@@ -671,19 +669,27 @@ endif()
 add_to_configure_file("config.h" "ARCH_AARCH64" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "ARCH_ARM" TYPE_BOOLEAN)
 
-if((HAVE_ASM) AND (ARCH_ARM OR ARCH_AARCH64))
-    enable_language(ASM)
-    message(STATUS ${CMAKE_ASM_SOURCE_FILE_EXTENSIONS})
-    separate_arguments(CMAKE_ASM_FLAGS_SEP UNIX_COMMAND "${CMAKE_ASM_FLAGS}")
-        execute_process(COMMAND ${CMAKE_ASM_COMPILER} ${CMAKE_ASM_FLAGS_SEP}
-            -x assembler-with-cpp -c ${CMAKE_CURRENT_BINARY_DIR}/gastest.S
-            RESULT_VARIABLE RESULT OUTPUT_VARIABLE OUTPUT ERROR_VARIABLE ERROR)
-    if (RESULT EQUAL 0)
-        message(STATUS "Assembler working")
-                message(STATUS "Compiler: ${CMAKE_ASM_COMPILER} Output: ${OUTPUT} flags ${CMAKE_ASM_FLAGS_SEP}")
-    else()
-        message(WARNING "Assembler not working")
-        message(STATUS "Output: ${OUTPUT}")
+if(HAVE_ASM AND (ARCH_ARM OR ARCH_AARCH64))
+    if (NOT MSVC)
+        enable_language(ASM)
+    else ()
+        set (CMAKE_ASM_MARMASM_SOURCE_FILE_EXTENSIONS "S")
+        find_program(PERL name "perl" HINTS ENV PATH)
+        if (NOT PERL)
+            message(FATAL_ERROR "Perl was not found. Please install it or disable assembly.")
+        endif()
+
+        find_program(GASPP name "gas-preprocessor.pl" HINTS ${CMAKE_MODULE_PATH})
+        if (NOT GASPP)
+            message(FATAL_ERROR "gas-preprocessor.pl was not found. Please install it or disable assembly.")
+        endif()
+
+        enable_language(ASM_MARMASM)
+
+        file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gas-preprocessor.bat" CONTENT "@ECHO OFF\n\n\"@PERL@\" \"@GASPP@\" -as-type armasm -arch @PROCESSOR@ -- \"@CMAKE_ASM_MARMASM_COMPILER@\" -nologo %* >NUL" ESCAPE_QUOTES @ONLY)
+        set(CMAKE_ASM_MARMASM_COMPILER "${CMAKE_CURRENT_BINARY_DIR}/gas-preprocessor.bat")
+        set(CMAKE_ASM_MARMASM_FLAGS " -I${CMAKE_CURRENT_SOURCE_DIR}/src/asm -I${CMAKE_CURRENT_BINARY_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/src/asm/arm ${CMAKE_ASM_MARMASM_FLAGS}")
+
     endif()
 
     set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
@@ -766,18 +772,30 @@ if((HAVE_ASM) AND (ARCH_ARM OR ARCH_AARCH64))
                 string(SUBSTRING "${ARCH_ENTENSION}" 0 "${pos}" INSTR_NAME)
                 math(EXPR pos "${pos} + 1")  # Skip the separator
                 string(SUBSTRING "${ARCH_ENTENSION}" "${pos}" -1 INSTR_CODE)
-                message("${var}: ${val}")
             endif ()
             string(TOUPPER ${INSTR_NAME} INSTR_NAME_UPPER)
 
-            try_compile(HAVE_AS_ARCHEXT_${INSTR_NAME_UPPER}_DIRECTIVE SOURCE_FROM_CONTENT "check_as_arch_${AS_ARCH_LEVEL}_${INSTR_NAME}.c" "__asm__ (${AS_ARCH_STR}\".arch_extension ${INSTR_NAME}\\n\"); int main() { return 0; }")
-            set(CODE "__asm__ (${AS_ARCH_STR}")
-            if (HAVE_AS_ARCHEXT_${INSTR_NAME_UPPER}_DIRECTIVE)
-                string(APPEND CODE "\".arch_extension ${INSTR_NAME}\\n\"")
+            if (NOT MSVC)
+                try_compile(HAVE_AS_ARCHEXT_${INSTR_NAME_UPPER}_DIRECTIVE SOURCE_FROM_CONTENT "check_as_arch_${AS_ARCH_LEVEL}_${INSTR_NAME}.c" "__asm__ (${AS_ARCH_STR}\".arch_extension ${INSTR_NAME}\\n\"); int main() { return 0; }")
+                set(CODE "__asm__ (${AS_ARCH_STR}")
+                if (HAVE_AS_ARCHEXT_${INSTR_NAME_UPPER}_DIRECTIVE)
+                    string(APPEND CODE "\".arch_extension ${INSTR_NAME}\\n\"")
+                endif()
+                string(APPEND CODE "\"${INSTR_CODE}\\n\");")
+                string(APPEND CODE "int main() { return 0; }")
+                try_compile(HAVE_${INSTR_NAME_UPPER} SOURCE_FROM_CONTENT "check_as_arch_${AS_ARCH_LEVEL}_${INSTR_NAME}_code.c" CODE)
+            else()
+                separate_arguments(CMAKE_ASM_MARMASM_FLAGS_SEP UNIX_COMMAND "${CMAKE_ASM_MARMASM_FLAGS}")
+                file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/check_${INSTR_NAME}_code.S" "${INSTR_CODE}")
+                execute_process(COMMAND ${CMAKE_ASM_MARMASM_COMPILER} ${CMAKE_ASM_MARMASM_FLAGS_SEP}
+                    "${CMAKE_CURRENT_BINARY_DIR}/check_${INSTR_NAME}_code.S" -o "${CMAKE_CURRENT_BINARY_DIR}/check_${INSTR_NAME}_code.obj"
+                    RESULT_VARIABLE RESULT OUTPUT_VARIABLE OUTPUT ERROR_VARIABLE ERROR)
+                file(REMOVE "${CMAKE_CURRENT_BINARY_DIR}/check_${INSTR_NAME}_code.S")
+                file(REMOVE "${CMAKE_CURRENT_BINARY_DIR}/check_${INSTR_NAME}_code.obj")
+                if (RESULT EQUAL 0)
+                    set(HAVE_${INSTR_NAME_UPPER} 1)
+                endif()
             endif()
-            string(APPEND CODE "\"${INSTR_CODE}\\n\");")
-            string(APPEND CODE "int main() { return 0; }")
-            try_compile(HAVE_${INSTR_NAME_UPPER} SOURCE_FROM_CONTENT "check_as_arch_${AS_ARCH_LEVEL}_${INSTR_NAME}_code.c" CODE)
         endforeach()     
     endif()
     unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
@@ -793,7 +811,9 @@ add_to_configure_file("config.h" "HAVE_DOTPROD" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_I8MM" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_SVE" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_SVE2" TYPE_BOOLEAN)
-add_to_configure_file("config.h" "AS_ARCH_LEVEL" TYPE_EXPRESSION)
+if (AS_ARCH_LEVEL)
+    add_to_configure_file("config.h" "AS_ARCH_LEVEL" TYPE_EXPRESSION)
+endif()
 
 if(ARCH_X86)
     if(${PROCESSOR} STREQUAL "x86_64")
@@ -1210,6 +1230,8 @@ set(LIBDAV1D_INCLUDE_DIRS
 )
 
 # The final dav1d library
+
+message("source files: ${LIBDAV1D_SOURCES}")
 add_library(dav1d ${TEMP_COMPAT_FILES} ${LIBDAV1D_SOURCES} ${LIBDAV1D_SOURCES_ASM})
 target_include_directories(dav1d PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
 target_include_directories(dav1d PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
@@ -1261,6 +1283,8 @@ foreach(BITS IN LISTS bitdepths)
         endif()
     endif()
 endforeach()
+
+
 
 if(TEMP_LINK_LIBRARIES)
     target_link_directories(dav1d PUBLIC ${TEMP_LINK_LIBRARIES})
