@@ -127,13 +127,14 @@ int main(int argc, const char **argv)
 
         // Update the progress every second.
         if (benchmark_clock_get_elapsed_time(&printf_clock) > 1000) {
+            easyav1_timestamp current_timestamp = easyav1_get_current_timestamp(easyav1);
             uint64_t total_frames = easyav1_get_total_video_frames_processed(easyav1);
             double fps = total_frames / (total_time / 1000.0);
+            double speed = current_timestamp / (total_time == 0 ? 1 : total_time);
 
-            easyav1_timestamp current_timestamp = easyav1_get_current_timestamp(easyav1);
 
-            int printed = printf("\rDecoding (%llu:%02llu): Decoded %llu frames in %lld ms (%lf fps average).",
-                current_timestamp / 60000, (current_timestamp / 1000) % 60, total_frames, total_time, fps);
+            int printed = printf("\rDecoding (%llu:%02llu): Decoded %llu frames in %lld ms (%lf fps average, %lfx).",
+                current_timestamp / 60000, (current_timestamp / 1000) % 60, total_frames, total_time, fps, speed);
 
             while (printed_chars > printed) {
                 printf(" ");
@@ -161,10 +162,13 @@ int main(int argc, const char **argv)
     }
 
     uint64_t total_frames = easyav1_get_total_video_frames_processed(easyav1);
+    easyav1_timestamp video_length = easyav1_get_duration(easyav1);
     double fps = total_frames / (total_time / 1000.0);
+    double speed = video_length / (total_time == 0 ? 1 : total_time);
 
     // Print the final result.
-    int printed = printf("\rDecoded %llu frames in %lld milliseconds (%lf fps average).", total_frames, total_time, fps);
+    int printed = printf("\rDecoded %llu frames in %lld milliseconds (%lf fps average, %lfx).",
+        total_frames, total_time, fps, speed);
     while (printed_chars > printed) {
         printf(" ");
         printed_chars--;
