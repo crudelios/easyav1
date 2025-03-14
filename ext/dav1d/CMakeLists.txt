@@ -1231,7 +1231,6 @@ set(LIBDAV1D_INCLUDE_DIRS
 
 # The final dav1d library
 
-message("source files: ${LIBDAV1D_SOURCES}")
 add_library(dav1d ${TEMP_COMPAT_FILES} ${LIBDAV1D_SOURCES} ${LIBDAV1D_SOURCES_ASM})
 target_include_directories(dav1d PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
 target_include_directories(dav1d PUBLIC ${LIBDAV1D_INCLUDE_DIRS})

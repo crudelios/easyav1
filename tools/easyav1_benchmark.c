@@ -37,6 +37,7 @@ void benchmark_clock_reset_timer(benchmark_clock *clock)
 }
 #else 
 #include <sys/time.h>
+#include <time.h>
 
 typedef struct {
     struct timespec start;
