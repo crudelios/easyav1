@@ -57,6 +57,8 @@ struct easyav1_t {
     struct {
         nestegg *context;
         unsigned int num_tracks;
+        unsigned int video_tracks;
+        unsigned int audio_tracks;
     } webm;
 
     struct {
@@ -485,8 +487,8 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    unsigned int current_video_track = 0;
-    unsigned int current_audio_track = 0;
+    easyav1->webm.video_tracks = 0;
+    easyav1->webm.audio_tracks = 0;
 
     for (unsigned int track = 0; track < easyav1->webm.num_tracks; track++) {
 
@@ -513,15 +515,19 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
 
             // Video already found or disabled - skip
             if (easyav1->settings.enable_video == EASYAV1_FALSE || easyav1->video.active == EASYAV1_TRUE) {
+                easyav1->webm.video_tracks++;
                 continue;
             }
 
-            if (current_video_track != easyav1->settings.video_track) {
-                current_video_track++;
+            if (easyav1->webm.video_tracks != easyav1->settings.video_track) {
+                easyav1->webm.video_tracks++;
                 continue;
             }
 
-            log(EASYAV1_LOG_LEVEL_INFO, "Found requested video track %u at webm track %u.", current_video_track, track);
+            log(EASYAV1_LOG_LEVEL_INFO, "Found requested video track %u at webm track %u.",
+                easyav1->webm.video_tracks, track);
+
+            easyav1->webm.video_tracks++;
 
             if (codec != NESTEGG_CODEC_AV1) {
                 log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported video codec found. Only AV1 codec is supported. Not displaying video.");
@@ -537,15 +543,19 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
 
             // Audio already found or disabled - skip
             if (easyav1->settings.enable_audio == EASYAV1_FALSE || easyav1->audio.active == EASYAV1_TRUE) {
+                easyav1->webm.audio_tracks++;
                 continue;
             }
 
-            if (current_audio_track != easyav1->settings.audio_track) {
-                current_audio_track++;
+            if (easyav1->webm.audio_tracks != easyav1->settings.audio_track) {
+                easyav1->webm.audio_tracks++;
                 continue;
             }
 
-            log(EASYAV1_LOG_LEVEL_INFO, "Found requested audio track %u at webm track %u.", current_audio_track, track);
+            log(EASYAV1_LOG_LEVEL_INFO, "Found requested audio track %u at webm track %u.",
+                easyav1->webm.audio_tracks, track);
+
+            easyav1->webm.audio_tracks++;
 
             if (codec != NESTEGG_CODEC_VORBIS) {
                 log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported audio codec found. Only vorbis codec is supported. Not playing audio.");
@@ -1884,6 +1894,16 @@ easyav1_timestamp easyav1_get_duration(const easyav1_t *easyav1)
     return easyav1->duration;
 }
 
+unsigned int easyav1_get_total_video_tracks(const easyav1_t *easyav1)
+{
+    return easyav1 ? easyav1->webm.video_tracks : 0;
+}
+
+unsigned int easyav1_get_total_audio_tracks(const easyav1_t *easyav1)
+{
+    return easyav1 ? easyav1->webm.audio_tracks : 0;
+}
+
 easyav1_bool easyav1_is_finished(const easyav1_t *easyav1)
 {
     if (!easyav1) {
@@ -1925,14 +1945,14 @@ static easyav1_status change_track(easyav1_t *easyav1, easyav1_packet_type type,
             return EASYAV1_STATUS_ERROR;
         }
 
-        int type = nestegg_track_type(easyav1->webm.context, track);
+        int track_type = nestegg_track_type(easyav1->webm.context, track);
 
-        if (type == -1) {
+        if (track_type == -1) {
             LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track type.");
             return EASYAV1_STATUS_ERROR;
         }
 
-        if (type == NESTEGG_TRACK_VIDEO && type == PACKET_TYPE_VIDEO) {
+        if (track_type == NESTEGG_TRACK_VIDEO && type == PACKET_TYPE_VIDEO) {
             if (current_track != track_id) {
                 current_track++;
                 continue;
@@ -1941,14 +1961,15 @@ static easyav1_status change_track(easyav1_t *easyav1, easyav1_packet_type type,
             log(EASYAV1_LOG_LEVEL_INFO, "Found requested video track %u at webm track %u.", current_track, track);
 
             if (codec != NESTEGG_CODEC_AV1) {
-                log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported video codec found. Only AV1 codec is supported. Not displaying video.");
+                log(EASYAV1_LOG_LEVEL_WARNING,
+                    "Unsupported video codec found. Only AV1 codec is supported. Not displaying video.");
                 return EASYAV1_STATUS_OK;
             }
 
             return init_video(easyav1, track);
         }
 
-        if (type == NESTEGG_TRACK_AUDIO && type == PACKET_TYPE_AUDIO) {
+        if (track_type == NESTEGG_TRACK_AUDIO && type == PACKET_TYPE_AUDIO) {
             if (current_track != track_id) {
                 current_track++;
                 continue;
@@ -1957,7 +1978,8 @@ static easyav1_status change_track(easyav1_t *easyav1, easyav1_packet_type type,
             log(EASYAV1_LOG_LEVEL_INFO, "Found requested audio track %u at webm track %u.", current_track, track);
 
             if (codec != NESTEGG_CODEC_VORBIS) {
-                log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported audio codec found. Only vorbis codec is supported. Not playing audio.");
+                log(EASYAV1_LOG_LEVEL_WARNING,
+                    "Unsupported audio codec found. Only vorbis codec is supported. Not playing audio.");
                 continue;
             }
 
@@ -1998,13 +2020,13 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
             easyav1->audio.has_samples_in_buffer = EASYAV1_FALSE;
         }
 
-        if (settings->enable_audio == EASYAV1_TRUE && settings->audio_track != easyav1->settings.audio_track) {
+        if (settings->enable_audio == EASYAV1_TRUE && settings->audio_track != old_settings.audio_track) {
             status = change_track(easyav1, PACKET_TYPE_AUDIO, settings->audio_track);
         }
 
     } else if (settings->enable_audio == EASYAV1_TRUE && settings->interlace_audio != old_settings.interlace_audio) {
 
-        if (settings->interlace_audio == EASYAV1_TRUE) {
+        if (old_settings.interlace_audio == EASYAV1_TRUE) {
             free(easyav1->audio.frame.pcm.deinterlaced);
             easyav1->audio.frame.pcm.deinterlaced = NULL;
         }
@@ -2041,7 +2063,7 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
             easyav1->video.has_picture_to_output = EASYAV1_FALSE;
         }
 
-        if (settings->enable_video == EASYAV1_TRUE && settings->video_track != easyav1->settings.video_track) {
+        if (settings->enable_video == EASYAV1_TRUE && settings->video_track != old_settings.video_track) {
             status = change_track(easyav1, PACKET_TYPE_VIDEO, settings->video_track);
         }
     }
@@ -2050,7 +2072,8 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
         return status;
     }
 
-    if (must_seek == EASYAV1_TRUE && easyav1->packets.started_fetching == EASYAV1_TRUE) {
+    if (must_seek == EASYAV1_TRUE &&
+        easyav1->packets.started_fetching == EASYAV1_TRUE && easyav1_is_finished(easyav1) == EASYAV1_FALSE) {
         log(EASYAV1_LOG_LEVEL_INFO, "Settings changed, seeking to timestamp %llu.", easyav1->timestamp);
 
         // Force slow seeking to keep the video at the current position

@@ -480,6 +480,27 @@ easyav1_bool easyav1_has_audio_track(const easyav1_t *easyav1);
 
 
 /*
+ * Gets the total number of video tracks in the file.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return The total number of video tracks in the file or `0` if there was an error.
+ *
+ */
+unsigned int easyav1_get_total_video_tracks(const easyav1_t *easyav1);
+
+
+/*
+ * Gets the total number of audio tracks in the file.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return The total number of audio tracks in the file or `0` if there was an error.
+ */
+unsigned int easyav1_get_total_audio_tracks(const easyav1_t *easyav1);
+
+
+/*
  * Gets the width of the video track.
  *
  * @param easyav1 The easyav1 instance.

@@ -89,7 +89,44 @@ static struct {
     int quit;
     easyav1_timestamp hovered_timestamp;
     easyav1_t *easyav1;
+    struct {
+        int displaying_help;
+        int loop;
+        int disable_audio;
+        int disable_video;
+        int use_fast_seek;
+        int audio_track;
+        int video_track;
+        int audio_offset;
+        int log_level;
+        const char *filename;
+    } options;
 } data;
+
+typedef enum {
+    OPTION_TYPE_INT,
+    OPTION_TYPE_BOOL
+} option_type;
+
+static const struct {
+    const char *name;
+    const char *abbr;
+    option_type type;
+    int *value_to_change;
+    const char *description;
+} option_list[] = {
+    { "help", "h", OPTION_TYPE_BOOL, &data.options.displaying_help, "Display this help message and exit." },
+    { "loop", "l", OPTION_TYPE_BOOL, &data.options.loop, "If set, video will loop back to the beginning when it finishes." },
+    { "disable_audio", "da", OPTION_TYPE_BOOL, &data.options.disable_audio, "If set, video will not play." },
+    { "disable_video", "dv", OPTION_TYPE_BOOL, &data.options.disable_video, "If set, audio will not play." },
+    { "use_fast_seek", "fs", OPTION_TYPE_BOOL, &data.options.use_fast_seek, "Whether to use a faster, but less accurate, seeking." },
+    { "audio_track", "at", OPTION_TYPE_INT, &data.options.audio_track, "The audio track to use. If the track doesn't exist, no audio will play." },
+    { "video_track", "vt", OPTION_TYPE_INT, &data.options.video_track, "The video track to use. If the video doesn't exist, no video will play." },
+    { "audio_offset", "ao", OPTION_TYPE_INT, &data.options.audio_offset, "Offset in millisseconds between audio and video." },
+    { "log-level", "l", OPTION_TYPE_INT, &data.options.log_level, "The log level: 0 - default, 1 - errors, 2 - warnings, 3 - info" },
+};
+
+#define OPTION_COUNT (sizeof(option_list) / sizeof(option_list[0]))
 
 static void video_callback(const easyav1_video_frame *frame, void *userdata)
 {
@@ -107,12 +144,133 @@ static void audio_callback(const easyav1_audio_frame *frame, void *userdata)
     SDL_QueueAudio(data.SDL.audio_device, frame->pcm.interlaced, frame->bytes);
 }
 
+const char *parse_file_name(const char *argv_name)
+{
+    const char *file_name = SDL_strrchr(argv_name, '/');
+
+    if (!file_name) {
+        file_name = SDL_strrchr(argv_name, '\\');
+    }
+
+    if (!file_name) {
+        file_name = argv_name;
+    } else {
+        file_name++;
+    }
+
+    return file_name;
+}
+
+int parse_options(int argc, char **argv)
+{
+    int count = 1;
+
+    const char *file_name = parse_file_name(argv[0]);
+
+    while (count < argc) {
+        if (argv[count][0] == '-') {
+            int found = 0;
+            for (size_t i = 0; i < OPTION_COUNT; i++) {
+                if ((option_list[i].name && argv[count][1] == '-' && strcmp(&argv[count][2], option_list[i].name) == 0) ||
+                    (option_list[i].abbr && strcmp(&argv[count][1], option_list[i].abbr) == 0)) {
+                    found = 1;
+                    switch (option_list[i].type) {
+                        case OPTION_TYPE_INT:
+                            if (count == argc - 1) {
+                                printf("Option %s requires an argument.\n", argv[count]);
+                                return 0;
+                            }
+                            count++;
+                            *option_list[i].value_to_change = atoi(argv[count]);
+                            break;
+                        case OPTION_TYPE_BOOL:
+                            *option_list[i].value_to_change = 1;
+                            break;
+                    }
+                    break;
+                }
+            }
+
+            if (!found) {
+                printf("Unknown argument: \"%s\".\nUse \"%s --help\" for more help.", argv[count], file_name);
+                return 0;
+            }
+
+        } else {
+            if (count == argc - 1) {
+                data.options.filename = argv[count];
+            } else {
+                printf("Unknown argument: \"%s\".\nUse \"%s --help\" for more help.", argv[count], file_name);
+                return 0;
+            }
+        }
+
+        count++;
+    }
+
+    if (!data.options.displaying_help && !data.options.filename) {
+        printf("Usage: \"%s [OPTIONS] <filename>\"\nUse \"%s --help\" for more help.", file_name, file_name);
+        return 0;
+    }
+
+    return 1;
+}
+
+static void display_help(const char *argv_name)
+{
+    size_t largest_name = 20;
+    size_t largest_abbr = 5;
+
+    for (size_t option = 0; option < OPTION_COUNT; option++)
+    {
+        if (option_list[option].name && strlen(option_list[option].name) > largest_name) {
+            largest_name = strlen(option_list[option].name);
+        }
+
+        if (option_list[option].abbr && strlen(option_list[option].abbr) > largest_abbr) {
+            largest_abbr = strlen(option_list[option].abbr);
+        }
+    }
+
+    printf("\neasyav1_player - A small AV1 video player.\n\n");
+
+    const char *file_name = parse_file_name(argv_name);
+
+    printf("Usage: \"%s [OPTIONS] <filename>\"\n\n", file_name);
+
+    printf("Options:\n\n");
+
+    for (size_t option = 0; option < OPTION_COUNT; option++)
+    {
+        const char *name_prefix = option_list[option].name ? "--" : "  ";
+        const char *name = option_list[option].name ? option_list[option].name : "";
+        const char *abbr_prefix = option_list[option].abbr ? "-" : " ";
+        const char *abbr = option_list[option].abbr ? option_list[option].abbr : "";
+
+        printf("  %s%-*s %s%-*s %s\n", name_prefix, largest_name, name,
+            abbr_prefix, largest_abbr, abbr, option_list[option].description);
+    }
+
+    printf("\n");
+}
+
 static int init_easyav1(const char *filename)
 {
     easyav1_settings settings = easyav1_default_settings();
     settings.callbacks.video = video_callback;
     settings.callbacks.audio = audio_callback;
-    settings.audio_offset_time = -22050 / 2048;
+    settings.audio_offset_time = -22050 / 2048 + data.options.audio_offset;
+    settings.video_track = data.options.video_track;
+    settings.audio_track = data.options.audio_track;
+    settings.enable_audio = !data.options.disable_audio;
+    settings.enable_video = !data.options.disable_video;
+    settings.use_fast_seeking = data.options.use_fast_seek;
+    if (data.options.log_level > 0) {
+        if (data.options.log_level > 4) {
+            data.options.log_level = 4;
+        }
+        settings.log_level = data.options.log_level - 1;
+    }
     data.easyav1 = easyav1_init_from_filename(filename, &settings);
     if (!data.easyav1) {
         return 0;
@@ -665,19 +823,25 @@ static void draw_play_pause_animation(void)
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        printf("Usage: %s <filename>\n", argv[0]);
-
+    if (!parse_options(argc, argv)) {
         return 1;
     }
 
-    init_easyav1(argv[1]);
+    if (data.options.displaying_help) {
+        display_help(argv[0]);
+        return 0;
+    }
+
+    init_easyav1(data.options.filename);
 
     if (!data.easyav1) {
         printf("Failed to initialize easyav1.\n");
 
         return 2;
     }
+
+    printf("Total video tracks: %u\n", easyav1_get_total_video_tracks(data.easyav1));
+    printf("Total audio tracks: %u\n", easyav1_get_total_audio_tracks(data.easyav1));
 
     if (!init_sdl()) {
         printf("Failed to initialize SDL.\n");
@@ -716,6 +880,10 @@ int main(int argc, char **argv)
         draw_play_pause_animation();
 
         SDL_RenderPresent(data.SDL.renderer);
+
+        if (data.options.loop && easyav1_is_finished(data.easyav1)) {
+            easyav1_seek_to_timestamp(data.easyav1, 0);
+        }
 
         last_timestamp = current_timestamp;
         current_timestamp = SDL_GetTicks64();
