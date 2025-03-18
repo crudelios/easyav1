@@ -106,6 +106,7 @@ struct easyav1_t {
 
         easyav1_bool synced;
         easyav1_bool all_fetched;
+        easyav1_bool started_fetching;
 
         easyav1_packet_queue video_queue;
         easyav1_packet_queue audio_queue;
@@ -142,7 +143,6 @@ static const easyav1_settings DEFAULT_SETTINGS = {
     .enable_audio = EASYAV1_TRUE,
     .skip_unprocessed_frames = EASYAV1_TRUE,
     .interlace_audio = EASYAV1_TRUE,
-    .video_conversion = EASYAV1_VIDEO_CONVERSION_NONE,
     .close_handle_on_destroy = EASYAV1_FALSE,
     .callbacks = {
         .video = NULL,
@@ -912,6 +912,8 @@ static easyav1_status sync_queues(easyav1_t *easyav1)
         return EASYAV1_STATUS_OK;
     }
 
+    easyav1->packets.started_fetching = EASYAV1_TRUE;
+
     // Simple packet fetching
     if (!easyav1->packets.audio_offset || !easyav1->video.active || !easyav1->audio.active) {
         easyav1_packet *packet = prepare_new_packet(easyav1);
@@ -1155,12 +1157,6 @@ static easyav1_status decode_video(easyav1_t *easyav1, uint8_t *data, size_t siz
         }
 
         if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-            dav1d_picture_unref(&pic);
-            continue;
-        }
-
-        if (pic.p.layout != DAV1D_PIXEL_LAYOUT_I420) {
-            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout, ignoring frame.");
             dav1d_picture_unref(&pic);
             continue;
         }
@@ -1701,11 +1697,32 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
 
     easyav1->video.has_picture_to_output = EASYAV1_FALSE;
     Dav1dPicture *pic = &easyav1->video.av1.pic;
+    easyav1_picture_type type = EASYAV1_PICTURE_TYPE_UNKNOWN;
 
-    if (pic->p.layout != DAV1D_PIXEL_LAYOUT_I420) {
-        // TODO convert on request or on unsupported type
+    switch (pic->p.layout) {
+        case DAV1D_PIXEL_LAYOUT_I400:
+            type = EASYAV1_PICTURE_TYPE_YUV400_8BPC;
+            break;
+        case DAV1D_PIXEL_LAYOUT_I420:
+            type = EASYAV1_PICTURE_TYPE_YUV420_8BPC;
+            break;
+        case DAV1D_PIXEL_LAYOUT_I422:
+            type = EASYAV1_PICTURE_TYPE_YUV422_8BPC;
+            break;
+        case DAV1D_PIXEL_LAYOUT_I444:
+            type = EASYAV1_PICTURE_TYPE_YUV444_8BPC;
+            break;
+        default:
+            dav1d_picture_unref(pic);
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout.");
+            return NULL;
+    }
+
+    if (pic->p.bpc == 10) {
+        type += EASYAV1_PICTURE_TYPE_10BPC_OFFSET;
+    } else if (pic->p.bpc != 8) {
         dav1d_picture_unref(pic);
-        log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout");
+        log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported bit depth.");
         return NULL;
     }
 
@@ -1719,7 +1736,8 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
             pic->stride[0],
             pic->stride[1],
             pic->stride[1]
-        }
+        },
+        .picture_type = type
     };
 
     easyav1->video.frame = frame;
@@ -1878,8 +1896,210 @@ easyav1_bool easyav1_is_finished(const easyav1_t *easyav1)
 
 
 /*
+ * Settings functions
+ */
+
+easyav1_settings easyav1_get_current_settings(const easyav1_t *easyav1)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
+        return DEFAULT_SETTINGS;
+    }
+
+    return easyav1->settings;
+}
+
+static void destroy_video(easyav1_t *easyav1);
+static void destroy_audio(easyav1_t *easyav1);
+
+static easyav1_status change_track(easyav1_t *easyav1, easyav1_packet_type type, unsigned int track_id)
+{
+    unsigned int current_track = 0;
+
+    for (unsigned int track = 0; track < easyav1->webm.num_tracks; track++) {
+
+        int codec = nestegg_track_codec_id(easyav1->webm.context, track);
+
+        if (codec == -1) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get codec for track %u.", track);
+            return EASYAV1_STATUS_ERROR;
+        }
+
+        int type = nestegg_track_type(easyav1->webm.context, track);
+
+        if (type == -1) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get track type.");
+            return EASYAV1_STATUS_ERROR;
+        }
+
+        if (type == NESTEGG_TRACK_VIDEO && type == PACKET_TYPE_VIDEO) {
+            if (current_track != track_id) {
+                current_track++;
+                continue;
+            }
+
+            log(EASYAV1_LOG_LEVEL_INFO, "Found requested video track %u at webm track %u.", current_track, track);
+
+            if (codec != NESTEGG_CODEC_AV1) {
+                log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported video codec found. Only AV1 codec is supported. Not displaying video.");
+                return EASYAV1_STATUS_OK;
+            }
+
+            return init_video(easyav1, track);
+        }
+
+        if (type == NESTEGG_TRACK_AUDIO && type == PACKET_TYPE_AUDIO) {
+            if (current_track != track_id) {
+                current_track++;
+                continue;
+            }
+
+            log(EASYAV1_LOG_LEVEL_INFO, "Found requested audio track %u at webm track %u.", current_track, track);
+
+            if (codec != NESTEGG_CODEC_VORBIS) {
+                log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported audio codec found. Only vorbis codec is supported. Not playing audio.");
+                continue;
+            }
+
+            return init_audio(easyav1, track);
+        }
+    }
+
+    log(EASYAV1_LOG_LEVEL_WARNING, "Track was not found, disabling %s.", type == PACKET_TYPE_VIDEO ? "video" : "audio");
+    return EASYAV1_STATUS_OK;
+}
+
+easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_settings *settings)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (!settings) {
+        log(EASYAV1_LOG_LEVEL_WARNING, "Settings are NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    easyav1_settings old_settings = easyav1->settings;
+    easyav1->settings = *settings;
+
+    easyav1_bool must_seek = EASYAV1_FALSE;
+
+    easyav1_status status = EASYAV1_STATUS_OK;
+
+    if (settings->enable_audio != old_settings.enable_audio || settings->audio_track != old_settings.audio_track) {
+
+        must_seek = EASYAV1_TRUE;
+
+        if (old_settings.enable_audio == EASYAV1_TRUE) {
+            destroy_audio(easyav1);
+            easyav1->audio.active = EASYAV1_FALSE;
+            easyav1->audio.has_samples_in_buffer = EASYAV1_FALSE;
+        }
+
+        if (settings->enable_audio == EASYAV1_TRUE && settings->audio_track != easyav1->settings.audio_track) {
+            status = change_track(easyav1, PACKET_TYPE_AUDIO, settings->audio_track);
+        }
+
+    } else if (settings->enable_audio == EASYAV1_TRUE && settings->interlace_audio != old_settings.interlace_audio) {
+
+        if (settings->interlace_audio == EASYAV1_TRUE) {
+            free(easyav1->audio.frame.pcm.deinterlaced);
+            easyav1->audio.frame.pcm.deinterlaced = NULL;
+        }
+
+        free(easyav1->audio.buffer);
+        easyav1->audio.buffer = NULL;
+        status = prepare_audio_buffer(easyav1);
+
+        must_seek = EASYAV1_TRUE;
+
+    } else if (settings->enable_audio == EASYAV1_TRUE && settings->audio_offset_time != old_settings.audio_offset_time) {
+
+        nestegg_audio_params params;
+
+        if (nestegg_track_audio_params(easyav1->webm.context, easyav1->audio.track, &params)) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get audio track parameters.");
+            return EASYAV1_STATUS_ERROR;
+        }
+
+        easyav1->packets.audio_offset = easyav1->settings.audio_offset_time +
+            internal_timestamp_to_ms(easyav1, params.codec_delay);
+
+        must_seek = EASYAV1_TRUE;
+
+    }
+
+    if (settings->enable_video != old_settings.enable_video ||
+        settings->video_track != old_settings.video_track) {
+        must_seek = EASYAV1_TRUE;
+
+        if (old_settings.enable_video == EASYAV1_TRUE) {
+            destroy_video(easyav1);
+            easyav1->video.active = EASYAV1_FALSE;
+            easyav1->video.has_picture_to_output = EASYAV1_FALSE;
+        }
+
+        if (settings->enable_video == EASYAV1_TRUE && settings->video_track != easyav1->settings.video_track) {
+            status = change_track(easyav1, PACKET_TYPE_VIDEO, settings->video_track);
+        }
+    }
+
+    if (status != EASYAV1_STATUS_OK) {
+        return status;
+    }
+
+    if (must_seek == EASYAV1_TRUE && easyav1->packets.started_fetching == EASYAV1_TRUE) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Settings changed, seeking to timestamp %llu.", easyav1->timestamp);
+
+        // Force slow seeking to keep the video at the current position
+        easyav1_bool use_fast_seeking = easyav1->settings.use_fast_seeking;
+        easyav1->settings.use_fast_seeking = EASYAV1_FALSE;
+
+        // Change the timestamp to force seeking
+        easyav1->timestamp++;
+        status = easyav1_seek_to_timestamp(easyav1, easyav1->timestamp - 1);
+
+        easyav1->settings.use_fast_seeking = use_fast_seeking;
+    }
+
+    return status;
+}
+
+
+/*
  * Destruction functions
  */
+
+static void destroy_video(easyav1_t *easyav1)
+{
+    if (easyav1->video.has_picture_to_output) {
+        dav1d_picture_unref(&easyav1->video.av1.pic);
+        memset(&easyav1->video.av1.pic, 0, sizeof(Dav1dPicture));
+    }
+
+    if (easyav1->video.av1.context) {
+        dav1d_close(&easyav1->video.av1.context);
+        easyav1->video.av1.context = NULL;
+    }
+}
+
+static void destroy_audio(easyav1_t *easyav1)
+{
+    vorbis_block_clear(&easyav1->audio.vorbis.block);
+    vorbis_dsp_clear(&easyav1->audio.vorbis.dsp);
+    vorbis_info_clear(&easyav1->audio.vorbis.info);
+    memset(&easyav1->audio.vorbis, 0, sizeof(easyav1->audio.vorbis));
+
+    free(easyav1->audio.buffer);
+    easyav1->audio.buffer = NULL;
+
+    if (!easyav1->settings.interlace_audio) {
+        free(easyav1->audio.frame.pcm.deinterlaced);
+        easyav1->audio.frame.pcm.deinterlaced = NULL;
+    }
+}
 
 void easyav1_destroy(easyav1_t **handle)
 {
@@ -1897,22 +2117,8 @@ void easyav1_destroy(easyav1_t **handle)
         return;
     }
 
-    if (easyav1->video.has_picture_to_output) {
-        dav1d_picture_unref(&easyav1->video.av1.pic);
-    }
-
-    if (easyav1->video.av1.context) {
-        dav1d_close(&easyav1->video.av1.context);
-    }
-
-    vorbis_block_clear(&easyav1->audio.vorbis.block);
-    vorbis_dsp_clear(&easyav1->audio.vorbis.dsp);
-    vorbis_info_clear(&easyav1->audio.vorbis.info);
-    free(easyav1->audio.buffer);
-
-    if (!easyav1->settings.interlace_audio) {
-        free(easyav1->audio.frame.pcm.deinterlaced);
-    }
+    destroy_video(easyav1);
+    destroy_audio(easyav1);
 
     release_packet_queue(easyav1, &easyav1->packets.video_queue);
     release_packet_queue(easyav1, &easyav1->packets.audio_queue);

@@ -1,6 +1,6 @@
 .vs
 .vscode
-build
+build*
 data/
 ext/SDL2
 CMakeSettings.json

@@ -1,4 +1,4 @@
-# *easyAV1*
+# easyAV1
 
 An easy to use WebM demuxer and AV1/Vorbis software decoder.
 
@@ -56,15 +56,18 @@ int main(int argc, char **argv)
 }
 ```
 
-...or you can check the file `main.c` for a proper mini player.
+...or you can check the file `tools/easyav1_player.c` for a proper mini player.
 
 ## Okay, but how do I build it?
 
-To build easyAV1, you need:
+To build easyAV1, you generally need:
 
 - A working compiler
 - A working assembler
 - CMake
+- SDL2 (for `easyav1_player`)
+
+If you're building for ARM64 on windows using Visual Studio, you'll also need Perl.
 
 Then run:
 
@@ -74,7 +77,7 @@ $ cmake ..
 $ make
 ```
 
-This should create `libeasyav1.a`/`easyav1.lib` and `easyav1_player.exe`.
+This should create `libeasyav1.a`/`easyav1.lib`, as well as the executables `easyav1_player` and `easyav1_benchmark`.
 
 
 ## I want to test it! Got any videos?
@@ -90,6 +93,8 @@ $ ffmpeg -i input.mp4 -c:v libsvtav1 -b:v 3000k -c:a libvorbis -q:a 4 -format we
 ## We already have things like ffmpeg. Why should I use this instead?
 
 The purpose of this library is to be easy to use and, in particularly, easy to add to an existing project.
+
+In addition, it has a much smaller executable footprint than ffmpeg.
 
 However, software AV1 decoding is all but simple. So, to try and fulfill that objective as best as possible, the library abides by the following rules:
 
@@ -110,10 +115,12 @@ In essence, this library serves the same purpose of [pl_mpeg](https://github.com
 In order to keep the code simple, some sacrifices had to be made:
 
 - Only WebM containers, AV1 video and Vorbis audio are supported
-- Only basic 8 bit yuv420 picture formats are supported
+- By default, only 8bpc video is supported. If you want 16bpc support, please run cmake with `-Dbitdepths=All`
+- The provided player only supports the 8 bit yuv420 picture format. Other formats will be ignored.
 - No multithreading is used for the decoder loop (note: dav1d has its own multithreading which is enabled)
+- The decoding is done using software, even if there's hardware decoding support for AV1
 
-Also, despite all the claimed simplicity, the code is still a bit on the large side: expect an increase of about 2MB to your executable.
+Also, despite all the claimed simplicity, the code is still a bit on the large side: expect an increase of about 2MB to your executable (or 3MB if 16bpc is enabled).
 
 
 ## What are the expectations going forward?

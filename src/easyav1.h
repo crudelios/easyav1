@@ -169,13 +169,33 @@ typedef struct {
 } easyav1_stream;
 
 
+
+/*
+ * Video conversion types.
+ */
+typedef enum {
+    EASYAV1_PICTURE_TYPE_UNKNOWN = 0,
+    EASYAV1_PICTURE_TYPE_YUV400_8BPC = 1,
+    EASYAV1_PICTURE_TYPE_YUV420_8BPC = 2,
+    EASYAV1_PICTURE_TYPE_YUV422_8BPC = 3,
+    EASYAV1_PICTURE_TYPE_YUV444_8BPC = 4,
+    EASYAV1_PICTURE_TYPE_10BPC_OFFSET = 4,
+    EASYAV1_PICTURE_TYPE_YUV400_10BPC = 5,
+    EASYAV1_PICTURE_TYPE_YUV420_10BPC = 6,
+    EASYAV1_PICTURE_TYPE_YUV422_10BPC = 7,
+    EASYAV1_PICTURE_TYPE_YUV444_10BPC = 8
+} easyav1_picture_type;
+
+
 /*
  * Video frame.
  */
 typedef struct {
     const void *data[3]; // The data for each YUV plane.
     size_t stride[3];    // The stride for each YUV plane.
+    easyav1_picture_type picture_type; // The picture type.
 } easyav1_video_frame;
+
 
 /*
  * Audio frame.
@@ -196,16 +216,6 @@ typedef struct {
  */
 typedef void(*easyav1_video_callback)(const easyav1_video_frame *frame, void *userdata);
 typedef void(*easyav1_audio_callback)(const easyav1_audio_frame *frame, void *userdata);
-
-
-/*
- * Video conversion types.
- */
-typedef enum {
-    EASYAV1_VIDEO_CONVERSION_NONE = 0,
-    EASYAV1_VIDEO_CONVERSION_RGBA,
-    EASYAV1_VIDEO_CONVERSION_ARGB
-} easyav1_video_conversion;
 
 
 /*
@@ -243,12 +253,6 @@ typedef enum {
  *     and deinterleaved audio can be obtained by calling `easyav1_get_audio_frame` and then accessing the
  *     `pcm.deinterlaced` field. Do note, though, that you can only use the appropriate field depending on the
  *     `interlace_audio` setting.
- *
- * - `video_conversion`: The video conversion to apply. This can be one of the following:
- *
- *      - `EASYAV1_VIDEO_CONVERSION_NONE`: No conversion is applied.
- *      - `EASYAV1_VIDEO_CONVERSION_RGBA`: The video is converted to RGBA.
- *      - `EASYAV1_VIDEO_CONVERSION_ARGB`: The video is converted to ARGB.
  *
  * - `close_handle_on_destroy`: Indicates whether the handle should be closed on destroy.
  *
@@ -298,7 +302,6 @@ typedef struct {
     easyav1_bool enable_audio;
     easyav1_bool skip_unprocessed_frames;
     easyav1_bool interlace_audio;
-    easyav1_video_conversion video_conversion;
     easyav1_bool close_handle_on_destroy;
     struct {
         easyav1_video_callback video;
@@ -321,7 +324,6 @@ typedef struct {
  * - Audio enabled (`.enable_audio = EASYAV1_TRUE`)
  * - Skip unprocessed frames (`.skip_unprocessed_frames = EASYAV1_TRUE`)
  * - Interlace audio (`.interlace_audio = EASYAV1_TRUE`)
- * - No video conversion (`.video_conversion = EASYAV1_VIDEO_CONVERSION_NONE`)
  * - Don't close the handle on destroy (`.close_handle_on_destroy = EASYAV1_FALSE`)
  * - No callbacks (`callbacks.video = NULL, callbacks.audio = NULL, callbacks.userdata = NULL`)
  * - Video track 0 (`.video_track = 0`)
@@ -577,6 +579,28 @@ const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1);
  * @return The duration of the file, or `0` if there was an error.
  */
 easyav1_timestamp easyav1_get_duration(const easyav1_t *easyav1);
+
+
+/*
+ * Gets the current settings of the easyav1 instance.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return The settings of the easyav1 instance.
+ */
+easyav1_settings easyav1_get_current_settings(const easyav1_t *easyav1);
+
+
+/*
+ * Updates the settings of the easyav1 instance.
+ * This will only update the settings that are different from the current settings.
+ *
+ * @param easyav1 The easyav1 instance.
+ * @param settings The new settings to use.
+ *
+ * @return `EASYAV1_STATUS_OK` if the settings were updated, `EASYAV1_STATUS_ERROR` if there was an error.
+ */
+easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_settings *settings);
 
 
 /*

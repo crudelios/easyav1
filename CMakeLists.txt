@@ -31,8 +31,6 @@ SET(NESTEGG_FILES
 	"ext/nestegg/nestegg.c"
 )
 
-find_package(SDL2)
-
 add_library(${PROJECT_NAME} ${HEADER_FILES} ${SOURCE_FILES} ${NESTEGG_FILES})
 target_include_directories(${PROJECT_NAME} PUBLIC
 	"src"

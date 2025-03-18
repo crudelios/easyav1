@@ -93,6 +93,10 @@ static struct {
 
 static void video_callback(const easyav1_video_frame *frame, void *userdata)
 {
+    // SDL can only handle YUV420 8-bit per component frames, so we just ignore other formats
+    if (frame->picture_type != EASYAV1_PICTURE_TYPE_YUV420_8BPC) {
+        return;
+    }
     SDL_UpdateYUVTexture(data.SDL.textures.video, NULL, frame->data[0], frame->stride[0], frame->data[1], frame->stride[1], frame->data[2], frame->stride[2]);
     SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
     data.got_video = 1;
