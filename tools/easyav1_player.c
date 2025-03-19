@@ -105,6 +105,7 @@ static struct {
         seek_mode mode;
         easyav1_timestamp timestamp;
     } seek;
+    double aspect_ratio;
     int quit;
     easyav1_timestamp hovered_timestamp;
     easyav1_t *easyav1;
@@ -112,6 +113,7 @@ static struct {
         int displaying_help;
         int loop;
         int fullscreen;
+        int keep_aspect_ratio;
         int disable_audio;
         int disable_video;
         int use_fast_seek;
@@ -138,6 +140,7 @@ static const struct {
     { "help", "h", OPTION_TYPE_BOOL, &data.options.displaying_help, "Display this help message and exit." },
     { "loop", "l", OPTION_TYPE_BOOL, &data.options.loop, "If set, video will loop back to the beginning when it finishes." },
     { "fullscreen", "f", OPTION_TYPE_BOOL, &data.options.fullscreen, "Start in fullscreen mode." },
+    { "keep_aspect_ratio", "ar", OPTION_TYPE_BOOL, &data.options.keep_aspect_ratio, "Keep the video's original aspect ratio regardless of window size." },
     { "disable_audio", "da", OPTION_TYPE_BOOL, &data.options.disable_audio, "If set, video will not play." },
     { "disable_video", "dv", OPTION_TYPE_BOOL, &data.options.disable_video, "If set, audio will not play." },
     { "use_fast_seek", "fs", OPTION_TYPE_BOOL, &data.options.use_fast_seek, "Whether to use a faster, but less accurate, seeking." },
@@ -285,6 +288,8 @@ static int init_easyav1(const char *filename)
     if (!data.easyav1) {
         return 0;
     }
+
+    data.aspect_ratio = (double) easyav1_get_video_width(data.easyav1) / easyav1_get_video_height(data.easyav1);
 
     return 1;
 }
@@ -713,6 +718,7 @@ static void toggle_fullscreen(void)
 
     if (flags & SDL_WINDOW_FULLSCREEN) {
         SDL_SetWindowFullscreen(data.SDL.window, 0);
+        SDL_ShowCursor(SDL_ENABLE);
     } else {
         SDL_SetWindowFullscreen(data.SDL.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
@@ -782,12 +788,18 @@ static void update_time_bar_status(void)
     unsigned int max_height = TIME_BAR_HEIGHT;
     easyav1_timestamp timestamp = SDL_GetTicks64();
 
+    int is_fullscreen = SDL_GetWindowFlags(data.SDL.window) & SDL_WINDOW_FULLSCREEN;
+
     switch (data.time_bar.state) {
         case TIME_BAR_CLOSED:
 
             if (data.time_bar.state_start_time < data.mouse.last_move_inside) {
                 data.time_bar.state = TIME_BAR_OPENING;
                 data.time_bar.state_start_time = timestamp;
+
+                if (is_fullscreen) {
+                    SDL_ShowCursor(SDL_ENABLE);
+                }
             }
 
             data.time_bar.y_offset = max_height;
@@ -826,6 +838,10 @@ static void update_time_bar_status(void)
                 data.time_bar.state = TIME_BAR_CLOSED;
                 data.time_bar.state_start_time = timestamp;
                 data.time_bar.y_offset = max_height;
+
+                if (is_fullscreen) {
+                    SDL_ShowCursor(SDL_DISABLE);
+                }
             } else if (data.mouse.last_move_inside >= data.time_bar.state_start_time) {
                 data.time_bar.state = TIME_BAR_OPENING;
                 easyav1_timestamp time_left = TIME_BAR_ANIMATION_MS - (timestamp - data.time_bar.state_start_time);
@@ -973,6 +989,38 @@ static void draw_play_pause_animation(void)
     }
 }
 
+static const SDL_Rect *get_aspect_ratio_rect(void)
+{
+    if (!data.options.keep_aspect_ratio) {
+        return NULL;
+    }
+
+    int width;
+    int height;
+
+    SDL_GetWindowSize(data.SDL.window, &width, &height);
+
+    static SDL_Rect rect;
+
+    double window_aspect_ratio = (double) width / height;
+
+    if (window_aspect_ratio > data.aspect_ratio) {
+        int new_width = height * data.aspect_ratio;
+        rect.x = (width - new_width) / 2;
+        rect.y = 0;
+        rect.w = new_width;
+        rect.h = height;
+    } else {
+        int new_height = width / data.aspect_ratio;
+        rect.x = 0;
+        rect.y = (height - new_height) / 2;
+        rect.w = width;
+        rect.h = new_height;
+    }
+
+    return &rect;
+}
+
 int main(int argc, char **argv)
 {
     if (!parse_options(argc, argv)) {
@@ -1020,6 +1068,7 @@ int main(int argc, char **argv)
 
         handle_input();
 
+        SDL_SetRenderDrawColor(data.SDL.renderer, 0, 0, 0, 255);
         SDL_RenderClear(data.SDL.renderer);
 
         if (easyav1_get_status(data.easyav1) == EASYAV1_STATUS_ERROR) {
@@ -1041,7 +1090,7 @@ int main(int argc, char **argv)
                 SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
             }
 
-            SDL_RenderCopy(data.SDL.renderer, data.SDL.textures.video, NULL, NULL);
+            SDL_RenderCopy(data.SDL.renderer, data.SDL.textures.video, NULL, get_aspect_ratio_rect());
         }
 
         draw_time_bar();
