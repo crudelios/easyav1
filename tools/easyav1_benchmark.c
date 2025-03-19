@@ -1,5 +1,6 @@
 #include "easyav1.h"
 
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -133,7 +134,7 @@ int main(int argc, const char **argv)
             double speed = current_timestamp / (double) (total_time == 0 ? 1 : total_time);
 
 
-            int printed = printf("\rDecoding (%llu:%02llu): Decoded %llu frames in %lld ms (%lf fps average, %.3lfx).",
+            int printed = printf("\rDecoding (%" PRIu64 ":%02" PRIu64 "): Decoded %" PRIu64 " frames in %" PRIu64 " ms (%lf fps average, %.3lfx).",
                 current_timestamp / 60000, (current_timestamp / 1000) % 60, total_frames, total_time, fps, speed);
 
             while (printed_chars > printed) {
@@ -167,14 +168,14 @@ int main(int argc, const char **argv)
     double speed = video_length / (double) (total_time == 0 ? 1 : total_time);
 
     // Print the final result.
-    int printed = printf("\rDecoded %llu frames in %lld milliseconds (%lf fps average, %.3lfx).",
+    int printed = printf("\rDecoded %" PRIu64 " frames in %" PRId64 " milliseconds (%lf fps average, %.3lfx).",
         total_frames, total_time, fps, speed);
     while (printed_chars > printed) {
         printf(" ");
         printed_chars--;
     }
 
-    printf("\nSlowest frame: #%llu (at %llu:%02llu) - %lld milliseconds (%lf fps).\n", slowest_frame,
+    printf("\nSlowest frame: #%" PRIu64 " (at %" PRIu64 ":%02" PRIu64 ") - %" PRId64 " milliseconds (%lf fps).\n", slowest_frame,
         slowest_frame_timestamp / 60000, (slowest_frame_timestamp / 1000) % 60,
         largest_frame_time, 1000 / (double) largest_frame_time);
 

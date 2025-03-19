@@ -2,6 +2,7 @@
 
 #include "SDL.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -257,8 +258,8 @@ static void display_help(const char *argv_name)
         const char *abbr = option_list[option].abbr ? option_list[option].abbr : "";
         const char *type = option_list[option].type == OPTION_TYPE_INT ? "<number>" : "        ";
 
-        printf("  %s%-*s %s%-*s  %s  %s\n", name_prefix, largest_name, name,
-            abbr_prefix, largest_abbr, abbr, type, option_list[option].description);
+        printf("  %s%-*s %s%-*s  %s  %s\n", name_prefix, (int) largest_name, name,
+            abbr_prefix, (int) largest_abbr, abbr, type, option_list[option].description);
     }
 
     printf("\n");
@@ -569,7 +570,7 @@ static int easyav1_decode_thread(void *userdata)
             data.seek.timestamp = 0;
 
             if (seek_status != EASYAV1_STATUS_OK) {
-                printf("Failed to seek to timestamp %llu\n", seek_timestamp);
+                printf("Failed to seek to timestamp %" PRIu64 "\n", seek_timestamp);
                 data.quit = 1;
 
                 SDL_UnlockMutex(data.SDL.thread.mutex.seek);
@@ -620,10 +621,10 @@ static int init_decoder_thread(void)
 static void get_timestamp_string(easyav1_timestamp timestamp, char *buffer, size_t size)
 {
     if (timestamp > 3600000) {
-        snprintf(buffer, size, "%llu:%02llu:%02llu", timestamp / 3600000,
+        snprintf(buffer, size, "%" PRIu64 ":%02" PRIu64 ":%02" PRIu64, timestamp / 3600000,
             timestamp / 60000, (timestamp / 1000) % 60);
     } else {
-        snprintf(buffer, size, "%llu:%02llu", timestamp / 60000, (timestamp / 1000) % 60);
+        snprintf(buffer, size, "%" PRIu64 ":%02" PRIu64, timestamp / 60000, (timestamp / 1000) % 60);
     }
 }
 
