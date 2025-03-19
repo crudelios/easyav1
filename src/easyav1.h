@@ -450,6 +450,21 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
 
 /*
+ * Indicates the current status of the easyav1 instance.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return The current status of the easyav1 instance.
+ *
+ * The status can be one of the following:
+ *
+ * - `EASYAV1_STATUS_OK`: Everything is fine.
+ * - `EASYAV1_STATUS_FINISHED`: The end of the stream has been reached.
+ * - `EASYAV1_STATUS_ERROR`: There was an error.
+ */
+easyav1_status easyav1_get_status(const easyav1_t *easyav1);
+
+/*
  * Gets the current timestamp of the parsing.
  *
  * @param easyav1 The easyav1 instance.
@@ -578,6 +593,7 @@ uint64_t easyav1_get_total_video_frames_processed(const easyav1_t *easyav1);
  * @return `EASYAV1_TRUE` if the audio buffer is filled, `EASYAV1_FALSE` otherwise.
  */
 easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1);
+
 
 /*
  * Gets the current audio frame, if there are available samples.

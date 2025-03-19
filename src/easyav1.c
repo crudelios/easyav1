@@ -568,6 +568,9 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
         }
     }
 
+    log(EASYAV1_LOG_LEVEL_INFO, "Total video tracks: %u", easyav1->webm.video_tracks);
+    log(EASYAV1_LOG_LEVEL_INFO, "Total audio tracks: %u", easyav1->webm.audio_tracks);
+
     return EASYAV1_STATUS_OK;
 }
 
@@ -1812,6 +1815,20 @@ const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1)
 easyav1_settings easyav1_default_settings(void)
 {
     return DEFAULT_SETTINGS;
+}
+
+easyav1_status easyav1_get_status(const easyav1_t *easyav1)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_WARNING, "Handle is NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    return easyav1->status;
 }
 
 easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1)

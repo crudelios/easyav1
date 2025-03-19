@@ -60,6 +60,13 @@ static struct {
     int y;
 } font_positions[FONT_IMAGE_COLS * FONT_IMAGE_ROWS];
 
+typedef enum {
+    SEEK_NONE = 0,
+    SEEK_BACKWARD = 1,
+    SEEK_FORWARD = 2,
+    SEEK_TO = 3
+} seek_mode;
+
 static struct {
     struct {
         SDL_Window *window;
@@ -69,12 +76,20 @@ static struct {
             SDL_Texture *font;
         } textures;
         SDL_AudioDeviceID audio_device;
+        struct {
+            SDL_Thread *decoder;
+            struct {
+                SDL_mutex *seek;
+                SDL_mutex *picture;
+            } mutex;
+        } thread;
     } SDL;
     struct {
         int x;
         int y;
         easyav1_timestamp last_move_inside;
         int pressed;
+        int double_click;
     } mouse;
     struct {
         time_bar_state state;
@@ -85,13 +100,17 @@ static struct {
         int paused;
         easyav1_timestamp last_change;
     } playback;
-    int got_video;
+    struct {
+        seek_mode mode;
+        easyav1_timestamp timestamp;
+    } seek;
     int quit;
     easyav1_timestamp hovered_timestamp;
     easyav1_t *easyav1;
     struct {
         int displaying_help;
         int loop;
+        int fullscreen;
         int disable_audio;
         int disable_video;
         int use_fast_seek;
@@ -117,27 +136,17 @@ static const struct {
 } option_list[] = {
     { "help", "h", OPTION_TYPE_BOOL, &data.options.displaying_help, "Display this help message and exit." },
     { "loop", "l", OPTION_TYPE_BOOL, &data.options.loop, "If set, video will loop back to the beginning when it finishes." },
+    { "fullscreen", "f", OPTION_TYPE_BOOL, &data.options.fullscreen, "Start in fullscreen mode." },
     { "disable_audio", "da", OPTION_TYPE_BOOL, &data.options.disable_audio, "If set, video will not play." },
     { "disable_video", "dv", OPTION_TYPE_BOOL, &data.options.disable_video, "If set, audio will not play." },
     { "use_fast_seek", "fs", OPTION_TYPE_BOOL, &data.options.use_fast_seek, "Whether to use a faster, but less accurate, seeking." },
     { "audio_track", "at", OPTION_TYPE_INT, &data.options.audio_track, "The audio track to use. If the track doesn't exist, no audio will play." },
     { "video_track", "vt", OPTION_TYPE_INT, &data.options.video_track, "The video track to use. If the video doesn't exist, no video will play." },
     { "audio_offset", "ao", OPTION_TYPE_INT, &data.options.audio_offset, "Offset in millisseconds between audio and video." },
-    { "log-level", "l", OPTION_TYPE_INT, &data.options.log_level, "The log level: 0 - default, 1 - errors, 2 - warnings, 3 - info" },
+    { "log-level", "L", OPTION_TYPE_INT, &data.options.log_level, "The log level: 0 - default, 1 - errors, 2 - warnings, 3 - info" },
 };
 
 #define OPTION_COUNT (sizeof(option_list) / sizeof(option_list[0]))
-
-static void video_callback(const easyav1_video_frame *frame, void *userdata)
-{
-    // SDL can only handle YUV420 8-bit per component frames, so we just ignore other formats
-    if (frame->picture_type != EASYAV1_PICTURE_TYPE_YUV420_8BPC) {
-        return;
-    }
-    SDL_UpdateYUVTexture(data.SDL.textures.video, NULL, frame->data[0], frame->stride[0], frame->data[1], frame->stride[1], frame->data[2], frame->stride[2]);
-    SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
-    data.got_video = 1;
-}
 
 static void audio_callback(const easyav1_audio_frame *frame, void *userdata)
 {
@@ -192,7 +201,7 @@ int parse_options(int argc, char **argv)
             }
 
             if (!found) {
-                printf("Unknown argument: \"%s\".\nUse \"%s --help\" for more help.", argv[count], file_name);
+                printf("Unknown argument: \"%s\".\nUse \"%s --help\" for more help.\n", argv[count], file_name);
                 return 0;
             }
 
@@ -200,7 +209,7 @@ int parse_options(int argc, char **argv)
             if (count == argc - 1) {
                 data.options.filename = argv[count];
             } else {
-                printf("Unknown argument: \"%s\".\nUse \"%s --help\" for more help.", argv[count], file_name);
+                printf("Unknown argument: \"%s\".\nUse \"%s --help\" for more help.\n", argv[count], file_name);
                 return 0;
             }
         }
@@ -209,7 +218,7 @@ int parse_options(int argc, char **argv)
     }
 
     if (!data.options.displaying_help && !data.options.filename) {
-        printf("Usage: \"%s [OPTIONS] <filename>\"\nUse \"%s --help\" for more help.", file_name, file_name);
+        printf("Usage: \"%s [OPTIONS] <filename>\"\nUse \"%s --help\" for more help.\n", file_name, file_name);
         return 0;
     }
 
@@ -219,7 +228,7 @@ int parse_options(int argc, char **argv)
 static void display_help(const char *argv_name)
 {
     size_t largest_name = 20;
-    size_t largest_abbr = 5;
+    size_t largest_abbr = 1;
 
     for (size_t option = 0; option < OPTION_COUNT; option++)
     {
@@ -246,9 +255,10 @@ static void display_help(const char *argv_name)
         const char *name = option_list[option].name ? option_list[option].name : "";
         const char *abbr_prefix = option_list[option].abbr ? "-" : " ";
         const char *abbr = option_list[option].abbr ? option_list[option].abbr : "";
+        const char *type = option_list[option].type == OPTION_TYPE_INT ? "<number>" : "        ";
 
-        printf("  %s%-*s %s%-*s %s\n", name_prefix, largest_name, name,
-            abbr_prefix, largest_abbr, abbr, option_list[option].description);
+        printf("  %s%-*s %s%-*s  %s  %s\n", name_prefix, largest_name, name,
+            abbr_prefix, largest_abbr, abbr, type, option_list[option].description);
     }
 
     printf("\n");
@@ -257,7 +267,6 @@ static void display_help(const char *argv_name)
 static int init_easyav1(const char *filename)
 {
     easyav1_settings settings = easyav1_default_settings();
-    settings.callbacks.video = video_callback;
     settings.callbacks.audio = audio_callback;
     settings.audio_offset_time = -22050 / 2048 + data.options.audio_offset;
     settings.video_track = data.options.video_track;
@@ -277,6 +286,17 @@ static int init_easyav1(const char *filename)
     }
 
     return 1;
+}
+
+static void exit_decoder_thread(void)
+{
+    SDL_WaitThread(data.SDL.thread.decoder, NULL);
+    SDL_DestroyMutex(data.SDL.thread.mutex.seek);
+    SDL_DestroyMutex(data.SDL.thread.mutex.picture);
+
+    data.SDL.thread.decoder = NULL;
+    data.SDL.thread.mutex.picture = NULL;
+    data.SDL.thread.mutex.seek = NULL;
 }
 
 static void quit_sdl(void)
@@ -330,8 +350,14 @@ static int init_sdl(void)
         video_height = display_mode.h - 100;
     }
 
+    flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
+
+    if (data.options.fullscreen) {
+        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    }
+
     data.SDL.window = SDL_CreateWindow("easyav1_player", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-        video_width, video_height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        video_width, video_height, flags);
 
     if (!data.SDL.window) {
         printf("Failed to create window. Reason: %s\n", SDL_GetError());
@@ -491,6 +517,105 @@ static void init_ui(void)
 #endif
 }
 
+static int easyav1_decode_thread(void *userdata)
+{
+    easyav1_timestamp last_timestamp = SDL_GetTicks64();
+    easyav1_timestamp current_timestamp = last_timestamp;
+
+    SDL_LockMutex(data.SDL.thread.mutex.picture);
+
+    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
+
+        SDL_UnlockMutex(data.SDL.thread.mutex.picture);
+
+        if (data.quit) {
+            break;
+        }
+
+        last_timestamp = current_timestamp;
+        current_timestamp = SDL_GetTicks64();
+
+        // Pause the video
+        if (data.mouse.pressed || data.playback.paused) {
+            last_timestamp = current_timestamp;
+        }
+
+        // Handle seeking
+        if (data.seek.mode != SEEK_NONE) {
+
+            SDL_LockMutex(data.SDL.thread.mutex.seek);
+
+            SDL_ClearQueuedAudio(data.SDL.audio_device);
+
+            easyav1_status seek_status = EASYAV1_STATUS_OK;
+
+            switch (data.seek.mode) {
+                case SEEK_BACKWARD:
+                    seek_status = easyav1_seek_backward(data.easyav1, SKIP_TIME_MS);
+                    break;
+                case SEEK_FORWARD:
+                    seek_status = easyav1_seek_forward(data.easyav1, SKIP_TIME_MS);
+                    break;
+                case SEEK_TO:
+                    seek_status = easyav1_seek_to_timestamp(data.easyav1, data.seek.timestamp);
+                    break;
+                default:
+                    break;
+            }
+
+            data.seek.mode = SEEK_NONE;
+            easyav1_timestamp seek_timestamp = data.seek.timestamp;
+            data.seek.timestamp = 0;
+
+            if (seek_status != EASYAV1_STATUS_OK) {
+                printf("Failed to seek to timestamp %llu\n", seek_timestamp);
+                data.quit = 1;
+
+                SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+
+                break;
+            }
+
+            if (easyav1_has_video_track(data.easyav1)) {
+                while (easyav1_has_video_frame(data.easyav1) == EASYAV1_FALSE &&
+                    easyav1_is_finished(data.easyav1) == EASYAV1_FALSE) {
+                    easyav1_decode_next(data.easyav1);
+                }
+            }
+
+            SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+        }
+
+        // Prevent busy waiting
+        if (current_timestamp == last_timestamp) {
+            SDL_Delay(1);
+        }
+
+        SDL_LockMutex(data.SDL.thread.mutex.picture);
+
+    }
+
+    SDL_UnlockMutex(data.SDL.thread.mutex.picture);
+
+    return 0;
+}
+
+static int init_decoder_thread(void)
+{
+    data.SDL.thread.mutex.picture = SDL_CreateMutex();
+    data.SDL.thread.mutex.seek = SDL_CreateMutex();
+    data.SDL.thread.decoder = SDL_CreateThread(easyav1_decode_thread, "easyav1_decode_thread", NULL);
+
+    if (!data.SDL.thread.mutex.picture || !data.SDL.thread.mutex.seek || !data.SDL.thread.decoder) {
+        printf("Failed to create decoder thread. Reason: %s\n", SDL_GetError());
+        data.quit = 1;
+        exit_decoder_thread();
+        return 0;
+    }
+
+    return 1;
+}
+
 static void get_timestamp_string(easyav1_timestamp timestamp, char *buffer, size_t size)
 {
     if (timestamp > 3600000) {
@@ -543,6 +668,21 @@ static void draw_timestamp(unsigned int x, unsigned int y, easyav1_timestamp tim
     }
 }
 
+static void request_seeking(seek_mode mode, easyav1_timestamp timestamp)
+{
+    // Pending seeking, do nothing
+    if (data.seek.mode != SEEK_NONE) {
+        return;
+    }
+
+    SDL_LockMutex(data.SDL.thread.mutex.seek);
+
+    data.seek.mode = mode;
+    data.seek.timestamp = timestamp;
+
+    SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+}
+
 static void handle_events(void)
 {
     SDL_Event ev;
@@ -552,14 +692,27 @@ static void handle_events(void)
         }
 
         if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_RIGHT) {
-            SDL_ClearQueuedAudio(data.SDL.audio_device);
-            easyav1_seek_forward(data.easyav1, SKIP_TIME_MS);
+            request_seeking(SEEK_FORWARD, SKIP_TIME_MS);
         }
 
         if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_LEFT) {
-            SDL_ClearQueuedAudio(data.SDL.audio_device);
-            easyav1_seek_backward(data.easyav1, SKIP_TIME_MS);
+            request_seeking(SEEK_BACKWARD, SKIP_TIME_MS);
         }
+
+        if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && ev.button.clicks == 2) {
+            data.mouse.double_click = 1;
+        }
+    }
+}
+
+static void toggle_fullscreen(void)
+{
+    Uint32 flags = SDL_GetWindowFlags(data.SDL.window);
+
+    if (flags & SDL_WINDOW_FULLSCREEN) {
+        SDL_SetWindowFullscreen(data.SDL.window, 0);
+    } else {
+        SDL_SetWindowFullscreen(data.SDL.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
 }
 
@@ -577,6 +730,11 @@ static void handle_input(void)
     int mouse_was_pressed = data.mouse.pressed;
 
     data.mouse.pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+
+    if (data.mouse.double_click) {
+        data.mouse.double_click = 0;
+        toggle_fullscreen();
+    }
 
     if (mouse_x != data.mouse.x || mouse_y != data.mouse.y) {
         if ((mouse_x >= 0 && mouse_y >= 0 && mouse_x < width && mouse_y < height) ||
@@ -605,15 +763,7 @@ static void handle_input(void)
 
     if (data.mouse.pressed) {
         if (mouse_is_hovering_timestamp || (mouse_was_pressed && mouse_moved)) {
-            SDL_ClearQueuedAudio(data.SDL.audio_device);
-            if (!easyav1_seek_to_timestamp(data.easyav1, hovered_timestamp)) {
-                printf("Failed to seek to timestamp %llu\n", hovered_timestamp);
-                return;
-            }
-            data.got_video = 0;
-            while (!data.got_video && !easyav1_is_finished(data.easyav1)) {
-                easyav1_decode_next(data.easyav1);
-            }
+            request_seeking(SEEK_TO, hovered_timestamp);
         }
 
         if (!mouse_is_hovering_timestamp && !mouse_was_pressed && !easyav1_is_finished(data.easyav1)) {
@@ -840,9 +990,6 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    printf("Total video tracks: %u\n", easyav1_get_total_video_tracks(data.easyav1));
-    printf("Total audio tracks: %u\n", easyav1_get_total_audio_tracks(data.easyav1));
-
     if (!init_sdl()) {
         printf("Failed to initialize SDL.\n");
         easyav1_destroy(&data.easyav1);
@@ -860,39 +1007,55 @@ int main(int argc, char **argv)
 
     init_ui();
 
-    easyav1_timestamp last_timestamp = SDL_GetTicks64();
-    easyav1_timestamp current_timestamp = last_timestamp;
+    if (!init_decoder_thread()) {
+        quit_sdl();
+        easyav1_destroy(&data.easyav1);
 
-    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
+        return 5;
+    }
+
+    while (!data.quit) {
+
         handle_input();
-
-        if (data.quit) {
-            break;
-        }
 
         SDL_RenderClear(data.SDL.renderer);
 
+        if (easyav1_get_status(data.easyav1) == EASYAV1_STATUS_ERROR) {
+            data.quit = 1;
+            break;
+        }
+
+        SDL_LockMutex(data.SDL.thread.mutex.seek);
+        SDL_LockMutex(data.SDL.thread.mutex.picture);
+
         if (easyav1_has_video_track(data.easyav1)) {
+
+            const easyav1_video_frame *frame = easyav1_get_video_frame(data.easyav1);
+
+            // SDL can only handle YUV420 8-bit per component frames, so we just ignore other formats
+            if (frame && frame->picture_type == EASYAV1_PICTURE_TYPE_YUV420_8BPC) {
+                SDL_UpdateYUVTexture(data.SDL.textures.video, NULL, frame->data[0], frame->stride[0], frame->data[1],
+                    frame->stride[1], frame->data[2], frame->stride[2]);
+                SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
+            }
+
             SDL_RenderCopy(data.SDL.renderer, data.SDL.textures.video, NULL, NULL);
         }
 
         draw_time_bar();
         draw_play_pause_animation();
 
+        SDL_UnlockMutex(data.SDL.thread.mutex.picture);
+        SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+
         SDL_RenderPresent(data.SDL.renderer);
 
         if (data.options.loop && easyav1_is_finished(data.easyav1)) {
-            easyav1_seek_to_timestamp(data.easyav1, 0);
-        }
-
-        last_timestamp = current_timestamp;
-        current_timestamp = SDL_GetTicks64();
-
-        // Pause the video
-        if (data.mouse.pressed || data.playback.paused) {
-            last_timestamp = current_timestamp;
+            request_seeking(SEEK_TO, 0);
         }
     }
+
+    exit_decoder_thread();
 
     quit_sdl();
 
