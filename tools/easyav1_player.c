@@ -390,6 +390,7 @@ static int init_sdl(void)
 
         // Keep the video texture black while it has no actual contents
         SDL_SetTextureColorMod(data.SDL.textures.video, 0, 0, 0);
+        SDL_SetTextureScaleMode(data.SDL.textures.video, SDL_ScaleModeBest);
     }
 
     if (easyav1_has_audio_track(data.easyav1)) {
