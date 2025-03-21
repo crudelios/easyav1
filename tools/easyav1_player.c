@@ -1,14 +1,10 @@
 #include "easyav1.h"
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <time.h>
-
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-#define HAS_RENDER_GEOMETRY 1
-#endif
 
 #define SKIP_TIME_MS 3000
 
@@ -76,12 +72,12 @@ static struct {
             SDL_Texture *video;
             SDL_Texture *font;
         } textures;
-        SDL_AudioDeviceID audio_device;
+        SDL_AudioStream *audio_stream;
         struct {
             SDL_Thread *decoder;
             struct {
-                SDL_mutex *seek;
-                SDL_mutex *picture;
+                SDL_Mutex *seek;
+                SDL_Mutex *picture;
             } mutex;
         } thread;
     } SDL;
@@ -105,9 +101,10 @@ static struct {
         seek_mode mode;
         easyav1_timestamp timestamp;
     } seek;
-    double aspect_ratio;
+    float aspect_ratio;
     int quit;
     easyav1_timestamp hovered_timestamp;
+    easyav1_stream file_stream;
     easyav1_t *easyav1;
     struct {
         int displaying_help;
@@ -154,7 +151,7 @@ static const struct {
 
 static void audio_callback(const easyav1_audio_frame *frame, void *userdata)
 {
-    SDL_QueueAudio(data.SDL.audio_device, frame->pcm.interlaced, frame->bytes);
+    SDL_PutAudioStreamData(data.SDL.audio_stream, frame->pcm.interlaced, frame->bytes);
 }
 
 const char *parse_file_name(const char *argv_name)
@@ -194,7 +191,7 @@ int parse_options(int argc, char **argv)
                                 return 0;
                             }
                             count++;
-                            *option_list[i].value_to_change = atoi(argv[count]);
+                            *option_list[i].value_to_change = SDL_atoi(argv[count]);
                             break;
                         case OPTION_TYPE_BOOL:
                             *option_list[i].value_to_change = 1;
@@ -219,11 +216,6 @@ int parse_options(int argc, char **argv)
         }
 
         count++;
-    }
-
-    if (!data.options.displaying_help && !data.options.filename) {
-        printf("Usage: \"%s [OPTIONS] <filename>\"\nUse \"%s --help\" for more help.\n", file_name, file_name);
-        return 0;
     }
 
     return 1;
@@ -268,6 +260,70 @@ static void display_help(const char *argv_name)
     printf("\n");
 }
 
+static int sdl_stream_read(void* buffer, size_t size, void *userdata)
+{
+	SDL_IOStream *stream = (SDL_IOStream *)userdata;
+	size_t result = SDL_ReadIO(stream, buffer, size);
+
+    if (result > 0) {
+        return 1;
+    } else {
+		return SDL_GetIOStatus(stream) == SDL_IO_STATUS_EOF ? 0 : -1;
+    }
+}
+
+static int sdl_stream_seek(int64_t offset, int origin, void* userdata)
+{
+	SDL_IOStream* stream = (SDL_IOStream*)userdata;
+	SDL_IOWhence whence;
+
+	switch (origin) {
+	    case SEEK_SET:
+		    whence = SDL_IO_SEEK_SET;
+		    break;
+	    case SEEK_CUR:
+		    whence = SDL_IO_SEEK_CUR;
+		    break;
+	    case SEEK_END:
+		    whence = SDL_IO_SEEK_END;
+		    break;
+        default:
+			return -1;
+	}
+
+	return SDL_SeekIO(stream, offset, whence) == -1 ? -1 : 0;
+}
+
+int64_t sdl_stream_tell(void* userdata)
+{
+	SDL_IOStream* stream = (SDL_IOStream*)userdata;
+	return SDL_TellIO(stream);
+}
+
+int create_file_stream(void)
+{
+    SDL_IOStream *sdl_stream = SDL_IOFromFile(data.options.filename, "rb");
+
+	if (!sdl_stream) {
+		printf("Error opening file: %s\n", SDL_GetError());
+		return 0;
+	}
+
+	data.file_stream.read_func = sdl_stream_read;
+    data.file_stream.seek_func = sdl_stream_seek;
+    data.file_stream.tell_func = sdl_stream_tell;
+    data.file_stream.userdata = sdl_stream;
+
+	return 1;
+}
+
+static void close_file_stream(void)
+{
+    if (data.file_stream.userdata) {
+        SDL_CloseIO(data.file_stream.userdata);
+    }
+}
+
 static int init_easyav1(const char *filename)
 {
     easyav1_settings settings = easyav1_default_settings();
@@ -284,12 +340,18 @@ static int init_easyav1(const char *filename)
         }
         settings.log_level = data.options.log_level - 1;
     }
-    data.easyav1 = easyav1_init_from_filename(filename, &settings);
-    if (!data.easyav1) {
+
+    if (!create_file_stream()) {
         return 0;
     }
 
-    data.aspect_ratio = (double) easyav1_get_video_width(data.easyav1) / easyav1_get_video_height(data.easyav1);
+    data.easyav1 = easyav1_init_from_custom_stream(&data.file_stream, &settings);
+    if (!data.easyav1) {
+		close_file_stream();
+        return 0;
+    }
+
+    data.aspect_ratio = (float) easyav1_get_video_width(data.easyav1) / easyav1_get_video_height(data.easyav1);
 
     return 1;
 }
@@ -307,8 +369,8 @@ static void exit_decoder_thread(void)
 
 static void quit_sdl(void)
 {
-    if (data.SDL.audio_device) {
-        SDL_CloseAudioDevice(data.SDL.audio_device);
+    if (data.SDL.audio_stream) {
+        SDL_DestroyAudioStream(data.SDL.audio_stream);
     }
 
     if (data.SDL.textures.font) {
@@ -332,38 +394,40 @@ static void quit_sdl(void)
 
 static int init_sdl(void)
 {
-    Uint32 flags = SDL_INIT_VIDEO;
+    SDL_InitFlags init_flags = SDL_INIT_VIDEO;
 
     if (easyav1_has_audio_track(data.easyav1)) {
-        flags |= SDL_INIT_AUDIO;
+        init_flags |= SDL_INIT_AUDIO;
     }
 
-    if (SDL_Init(flags) < 0) {
+    if (!SDL_Init(init_flags)) {
         printf("Failed to initialize SDL. Reason: %s\n", SDL_GetError());
         return 0;
     }
 
-    SDL_DisplayMode display_mode;
-    SDL_GetDesktopDisplayMode(0, &display_mode);
+    const SDL_DisplayMode *display_mode = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+    if (!display_mode) {
+		printf("Failed to get display mode! Reason %s\n", SDL_GetError());
+        return 0;
+    }
 
     unsigned int video_width = easyav1_get_video_width(data.easyav1);
     unsigned int video_height = easyav1_get_video_height(data.easyav1);
 
-    if (video_width > display_mode.w - 10) {
-        video_width = display_mode.w - 10;
+    if (video_width > display_mode->w - 10) {
+        video_width = display_mode->w - 10;
     }
-    if (video_height > display_mode.h - 100) {
-        video_height = display_mode.h - 100;
+    if (video_height > display_mode->h - 100) {
+        video_height = display_mode->h - 100;
     }
 
-    flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
+    SDL_WindowFlags window_flags = SDL_WINDOW_RESIZABLE;
 
     if (data.options.fullscreen) {
-        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+        window_flags |= SDL_WINDOW_FULLSCREEN;
     }
 
-    data.SDL.window = SDL_CreateWindow("easyav1_player", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-        video_width, video_height, flags);
+    data.SDL.window = SDL_CreateWindow("easyav1_player", video_width, video_height, window_flags);
 
     if (!data.SDL.window) {
         printf("Failed to create window. Reason: %s\n", SDL_GetError());
@@ -371,17 +435,18 @@ static int init_sdl(void)
         return 0;
     }
 
-    data.SDL.renderer = SDL_CreateRenderer(data.SDL.window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-
-    SDL_SetRenderDrawColor(data.SDL.renderer, 0, 0, 0, 255);
-    SDL_RenderClear(data.SDL.renderer);
-    SDL_RenderPresent(data.SDL.renderer);
+    data.SDL.renderer = SDL_CreateRenderer(data.SDL.window, NULL);
 
     if (!data.SDL.renderer) {
         printf("Failed to create renderer. Reason: %s\n", SDL_GetError());
         quit_sdl();
         return 0;
     }
+
+    SDL_SetRenderVSync(data.SDL.renderer, 1);
+    SDL_SetRenderDrawColor(data.SDL.renderer, 0, 0, 0, 255);
+    SDL_RenderClear(data.SDL.renderer);
+    SDL_RenderPresent(data.SDL.renderer);
 
     unsigned int width = easyav1_get_video_width(data.easyav1);
     unsigned int height = easyav1_get_video_height(data.easyav1);
@@ -396,26 +461,24 @@ static int init_sdl(void)
 
         // Keep the video texture black while it has no actual contents
         SDL_SetTextureColorMod(data.SDL.textures.video, 0, 0, 0);
-        SDL_SetTextureScaleMode(data.SDL.textures.video, SDL_ScaleModeBest);
     }
 
     if (easyav1_has_audio_track(data.easyav1)) {
         SDL_AudioSpec audio_spec = {
             .freq = easyav1_get_audio_sample_rate(data.easyav1),
-            .format = AUDIO_F32,
-            .channels = easyav1_get_audio_channels(data.easyav1),
-            .samples = 2048
+            .format = SDL_AUDIO_F32,
+            .channels = easyav1_get_audio_channels(data.easyav1)
         };
 
-        data.SDL.audio_device = SDL_OpenAudioDevice(NULL, 0, &audio_spec, NULL, 0);
+        data.SDL.audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, NULL, NULL);
 
-        if (data.SDL.audio_device == 0) {
-            printf("Failed to open audio device. Reason: %s\n", SDL_GetError());
+        if (data.SDL.audio_stream == 0) {
+            printf("Failed to open audio stream device. Reason: %s\n", SDL_GetError());
             quit_sdl();
             return 0;
         }
 
-        SDL_PauseAudioDevice(data.SDL.audio_device, 0);
+        SDL_ResumeAudioStreamDevice(data.SDL.audio_stream);
     }
 
     return 1;
@@ -423,21 +486,14 @@ static int init_sdl(void)
 
 static int init_fonts(void)
 {
-    SDL_Surface *font_surface = SDL_CreateRGBSurface(0,
-        FONT_WIDTH * FONT_IMAGE_COLS,
-        FONT_HEIGHT * FONT_IMAGE_ROWS,
-        32, 0xff000000, 0x00ff0000, 0x0000ff00, 0x000000ff);
+    SDL_Surface *font_surface = SDL_CreateSurface(FONT_WIDTH * FONT_IMAGE_COLS, FONT_HEIGHT * FONT_IMAGE_ROWS, SDL_PIXELFORMAT_RGBA8888);
 
     if (!font_surface) {
         printf("Failed to create font surface. Reason: %s\n", SDL_GetError());
         return 0;
     }
 
-    if (SDL_FillRect(font_surface, NULL, SDL_MapRGBA(font_surface->format, 0, 0, 0, 0))) {
-        printf("Failed to fill font surface. Reason: %s\n", SDL_GetError());
-        SDL_FreeSurface(font_surface);
-        return 0;
-    }
+    const SDL_PixelFormatDetails *format_details = SDL_GetPixelFormatDetails(font_surface->format);
 
     for (int i = 0; i < FONT_IMAGE_COLS * FONT_IMAGE_ROWS; i++) {
         font_positions[i].x = i % FONT_IMAGE_COLS * FONT_WIDTH;
@@ -448,7 +504,7 @@ static int init_fonts(void)
         for (int y = 0; y < FONT_HEIGHT; y++) {
             for (int x = 0; x < FONT_WIDTH; x++) {
                 if (FONT[i][y] & (1 << x)) {
-                    SDL_FillRect(font_surface, &rect, SDL_MapRGBA(font_surface->format, 0xff, 0xff, 0xff, 0xff));
+                    SDL_FillSurfaceRect(font_surface, &rect, SDL_MapRGBA(format_details, NULL, 0xff, 0xff, 0xff, 0xff));
                 }
                 rect.x += 1;
             }
@@ -459,74 +515,26 @@ static int init_fonts(void)
 
     data.SDL.textures.font = SDL_CreateTextureFromSurface(data.SDL.renderer, font_surface);
 
+    SDL_DestroySurface(font_surface);
+
     if (!data.SDL.textures.font) {
         printf("Failed to create font texture. Reason: %s\n", SDL_GetError());
-        SDL_FreeSurface(font_surface);
         return 0;
     }
-
-    SDL_SetTextureBlendMode(data.SDL.textures.font, SDL_BLENDMODE_BLEND);
-
-    SDL_FreeSurface(font_surface);
 
     return 1;
 }
 
-#ifndef HAS_RENDER_GEOMETRY
-/*
- * Inneficient way to draw a triangle that looks like a play button:
- * Starting from the center of the triangle, draw the top line, then the bottom line, then the left line.
- * The left line is slanted 1px to the left to the top.
- * Repeat the loop until you fill the entire triangle.
- * The triangle is centered at x, y.
- *
- * To draw the triangle, you need to call SDL_RenderDrawLines with the points in the play_icon_points array.
- * You also need to call a final SDL_RenderDrawLine to draw the leftmost line (as the one in the loop is slanted).
- *
- * This is inneficient because, for a triangle of size N, you need to draw N + N/2 + 2 lines.
- *
- * It also doesn't look that good with partial transparency, as the lines overlap.
- */
-static void prepare_play_icon(void)
-{
-    unsigned int width;
-    unsigned int height;
-    SDL_GetWindowSize(data.SDL.window, &width, &height);
-
-    int x = (width - MAX_PLAY_BUTTON_SIZE) / 2;
-    int y = (height - MAX_PLAY_BUTTON_SIZE) / 2;
-
-#define SET_POINT(px, py) \
-    play_icon_points[point].x = px; \
-    play_icon_points[point].y = py; \
-    point++;
-
-    unsigned int point = 0;
-
-    SET_POINT(x + MAX_PLAY_BUTTON_SIZE / 2, y + MAX_PLAY_BUTTON_SIZE / 2);
-
-    for (int current = MAX_PLAY_BUTTON_SIZE / 2 - 1; current >= 0; current--) {
-        SET_POINT(x + MAX_PLAY_BUTTON_SIZE - current, y + MAX_PLAY_BUTTON_SIZE / 2);
-        SET_POINT(x + current + 1, y + MAX_PLAY_BUTTON_SIZE - current);
-        SET_POINT(x + current, y + current);
-    }
-#undef SET_POINT
-}
-#endif
-
 static void init_ui(void)
 {
     data.time_bar.state = TIME_BAR_OPEN;
-    data.time_bar.state_start_time = SDL_GetTicks64();
+    data.time_bar.state_start_time = SDL_GetTicks();
 
-#ifndef HAS_RENDER_GEOMETRY
-    prepare_play_icon();
-#endif
 }
 
 static int easyav1_decode_thread(void *userdata)
 {
-    easyav1_timestamp last_timestamp = SDL_GetTicks64();
+    easyav1_timestamp last_timestamp = SDL_GetTicks();
     easyav1_timestamp current_timestamp = last_timestamp;
 
     SDL_LockMutex(data.SDL.thread.mutex.picture);
@@ -540,7 +548,7 @@ static int easyav1_decode_thread(void *userdata)
         }
 
         last_timestamp = current_timestamp;
-        current_timestamp = SDL_GetTicks64();
+        current_timestamp = SDL_GetTicks();
 
         // Pause the video
         if (data.mouse.pressed || data.playback.paused) {
@@ -552,7 +560,7 @@ static int easyav1_decode_thread(void *userdata)
 
             SDL_LockMutex(data.SDL.thread.mutex.seek);
 
-            SDL_ClearQueuedAudio(data.SDL.audio_device);
+            SDL_FlushAudioStream(data.SDL.audio_stream);
 
             easyav1_status seek_status = EASYAV1_STATUS_OK;
 
@@ -655,21 +663,21 @@ static void draw_timestamp(unsigned int x, unsigned int y, easyav1_timestamp tim
             continue;
         }
 
-        SDL_Rect src = {
+        SDL_FRect src = {
             .x = font_positions[c].x,
             .y = font_positions[c].y,
             .w = FONT_WIDTH,
             .h = FONT_HEIGHT
         };
 
-        SDL_Rect dst = {
+        SDL_FRect dst = {
             .x = x,
             .y = y,
             .w = FONT_WIDTH,
             .h = FONT_HEIGHT
         };
 
-        SDL_RenderCopy(data.SDL.renderer, data.SDL.textures.font, &src, &dst);
+        SDL_RenderTexture(data.SDL.renderer, data.SDL.textures.font, &src, &dst);
 
         x += FONT_WIDTH + FONT_PADDING;
     }
@@ -694,19 +702,19 @@ static void handle_events(void)
 {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT || (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_ESCAPE)) {
+        if (ev.type == SDL_EVENT_QUIT || (ev.type == SDL_EVENT_KEY_UP && ev.key.key == SDLK_ESCAPE)) {
             data.quit = 1;
         }
 
-        if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_RIGHT) {
+        if (ev.type == SDL_EVENT_KEY_UP && ev.key.key == SDLK_RIGHT) {
             request_seeking(SEEK_FORWARD, SKIP_TIME_MS);
         }
 
-        if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_LEFT) {
+        if (ev.type == SDL_EVENT_KEY_UP && ev.key.key == SDLK_LEFT) {
             request_seeking(SEEK_BACKWARD, SKIP_TIME_MS);
         }
 
-        if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && ev.button.clicks == 2) {
+        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT && ev.button.clicks == 2) {
             data.mouse.double_click = 1;
         }
     }
@@ -714,13 +722,13 @@ static void handle_events(void)
 
 static void toggle_fullscreen(void)
 {
-    Uint32 flags = SDL_GetWindowFlags(data.SDL.window);
+    SDL_WindowFlags flags = SDL_GetWindowFlags(data.SDL.window);
 
     if (flags & SDL_WINDOW_FULLSCREEN) {
-        SDL_SetWindowFullscreen(data.SDL.window, 0);
-        SDL_ShowCursor(SDL_ENABLE);
+        SDL_SetWindowFullscreen(data.SDL.window, false);
+        SDL_ShowCursor();
     } else {
-        SDL_SetWindowFullscreen(data.SDL.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        SDL_SetWindowFullscreen(data.SDL.window, true);
     }
 }
 
@@ -732,12 +740,12 @@ static void handle_input(void)
     int height;
     SDL_GetWindowSize(data.SDL.window, &width, &height);
 
-    int mouse_x;
-    int mouse_y;
+    float mouse_x;
+    float mouse_y;
     int mouse_moved = 0;
     int mouse_was_pressed = data.mouse.pressed;
 
-    data.mouse.pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+    data.mouse.pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON_LMASK) != 0;
 
     if (data.mouse.double_click) {
         data.mouse.double_click = 0;
@@ -747,7 +755,7 @@ static void handle_input(void)
     if (mouse_x != data.mouse.x || mouse_y != data.mouse.y) {
         if ((mouse_x >= 0 && mouse_y >= 0 && mouse_x < width && mouse_y < height) ||
             mouse_was_pressed) {
-            data.mouse.last_move_inside = SDL_GetTicks64();
+            data.mouse.last_move_inside = SDL_GetTicks();
             data.mouse.x = mouse_x;
             data.mouse.y = mouse_y;
             mouse_moved = 1;
@@ -776,7 +784,7 @@ static void handle_input(void)
 
         if (!mouse_is_hovering_timestamp && !mouse_was_pressed && !easyav1_is_finished(data.easyav1)) {
             data.playback.paused = !data.playback.paused;
-            data.playback.last_change = SDL_GetTicks64();
+            data.playback.last_change = SDL_GetTicks();
         }
     }
 
@@ -786,7 +794,7 @@ static void handle_input(void)
 static void update_time_bar_status(void)
 {
     unsigned int max_height = TIME_BAR_HEIGHT;
-    easyav1_timestamp timestamp = SDL_GetTicks64();
+    easyav1_timestamp timestamp = SDL_GetTicks();
 
     int is_fullscreen = SDL_GetWindowFlags(data.SDL.window) & SDL_WINDOW_FULLSCREEN;
 
@@ -798,7 +806,7 @@ static void update_time_bar_status(void)
                 data.time_bar.state_start_time = timestamp;
 
                 if (is_fullscreen) {
-                    SDL_ShowCursor(SDL_ENABLE);
+                    SDL_ShowCursor();
                 }
             }
 
@@ -840,7 +848,7 @@ static void update_time_bar_status(void)
                 data.time_bar.y_offset = max_height;
 
                 if (is_fullscreen) {
-                    SDL_ShowCursor(SDL_DISABLE);
+                    SDL_HideCursor();
                 }
             } else if (data.mouse.last_move_inside >= data.time_bar.state_start_time) {
                 data.time_bar.state = TIME_BAR_OPENING;
@@ -880,7 +888,7 @@ static void draw_time_bar(void)
 
     unsigned int y_offset = window_height - TIME_BAR_HEIGHT + data.time_bar.y_offset;
 
-    SDL_Rect rect = {
+    SDL_FRect rect = {
         .x = 0,
         .y = y_offset,
         .w = window_width,
@@ -906,7 +914,7 @@ static void draw_time_bar(void)
     rect.y = y_offset + 28;
     rect.w = window_width - 2 * TIME_BAR_SIDE_PADDING - x_offset;
     rect.h = 10;
-    SDL_RenderDrawRect(data.SDL.renderer, &rect);
+    SDL_RenderRect(data.SDL.renderer, &rect);
 
     if (duration > 0) {
         rect.x += 2;
@@ -932,18 +940,12 @@ static void draw_play_icon(unsigned int size, uint8_t opacity)
     int x = (width - size) / 2;
     int y = (height - size) / 2;
 
-#ifdef HAS_RENDER_GEOMETRY
     SDL_Vertex vertices[3] = {
         { .position.x = x, .position.y = y, .color = { 255, 255, 255, opacity } },
         { .position.x = x + size, .position.y = y + size / 2, .color = { 255, 255, 255, opacity } },
         { .position.x = x, .position.y = y + size, .color = { 255, 255, 255, opacity } }
     };
     SDL_RenderGeometry(data.SDL.renderer, 0, vertices, 3, 0, 0);
-#else
-    SDL_SetRenderDrawColor(data.SDL.renderer, 255, 255, 255, opacity);
-    SDL_RenderDrawLines(data.SDL.renderer, play_icon_points, size + size / 2 + 1);
-    SDL_RenderDrawLine(data.SDL.renderer, x, y, x, y + size);
-#endif
 }
 
 static void draw_pause_icon(unsigned int size, uint8_t opacity)
@@ -958,12 +960,12 @@ static void draw_pause_icon(unsigned int size, uint8_t opacity)
     int height;
     SDL_GetWindowSize(data.SDL.window, &width, &height);
 
-    int x = (width - size) / 2;
-    int y = (height - size) / 2;
+    float x = (width - size) / 2.0f;
+    float y = (height - size) / 2.0f;
 
-    SDL_Rect rects[2] = {
-        { .x = x + size / 12, .y = y, .w = size / 3, .h = size },
-        { .x = x + size / 3 + size / 6 + size / 12, .y = y, .w = size / 3, .h = size }
+    SDL_FRect rects[2] = {
+        { .x = x + size / 12.0f, .y = y, .w = size / 3.0f, .h = size },
+        { .x = x + size / 3.0f + size / 6 + size / 12.0f, .y = y, .w = size / 3.0f, .h = size }
     };
 
     SDL_SetRenderDrawColor(data.SDL.renderer, 255, 255, 255, opacity);
@@ -976,7 +978,7 @@ static void draw_play_pause_animation(void)
         return;
     }
 
-    easyav1_timestamp diff = SDL_GetTicks64() - data.playback.last_change;
+    easyav1_timestamp diff = SDL_GetTicks() - data.playback.last_change;
 
     if (diff >= PLAY_PAUSE_ANIMATION_MS) {
         return;
@@ -989,7 +991,7 @@ static void draw_play_pause_animation(void)
     }
 }
 
-static const SDL_Rect *get_aspect_ratio_rect(void)
+static const SDL_FRect *get_aspect_ratio_rect(void)
 {
     if (!data.options.keep_aspect_ratio) {
         return NULL;
@@ -1000,25 +1002,75 @@ static const SDL_Rect *get_aspect_ratio_rect(void)
 
     SDL_GetWindowSize(data.SDL.window, &width, &height);
 
-    static SDL_Rect rect;
+    static SDL_FRect rect;
 
-    double window_aspect_ratio = (double) width / height;
+    float window_aspect_ratio = width / (float) height;
 
     if (window_aspect_ratio > data.aspect_ratio) {
-        int new_width = height * data.aspect_ratio;
-        rect.x = (width - new_width) / 2;
+        float new_width = height * data.aspect_ratio;
+        rect.x = (width - new_width) / 2.0f;
         rect.y = 0;
         rect.w = new_width;
         rect.h = height;
     } else {
-        int new_height = width / data.aspect_ratio;
+        float new_height = width / data.aspect_ratio;
         rect.x = 0;
-        rect.y = (height - new_height) / 2;
+        rect.y = (height - new_height) / 2.0f;
         rect.w = width;
         rect.h = new_height;
     }
 
     return &rect;
+}
+
+static void selected_file(void *userdata, const char * const *filelist, int filter)
+{
+    if (!filelist) {
+        printf("Error creating the file dialog window.\n");
+        *((int*)userdata) = 1;
+        return;
+    }
+    
+    if (!*filelist) {
+        *((int*)userdata) = 1;
+        return;
+    }
+
+    static char filename[300];
+
+    snprintf(filename, 300, "%s", filelist[0]);
+
+    data.options.filename = filename;
+
+    *((int*)userdata) = 1;
+}
+
+static int show_open_file_dialog(void)
+{
+    SDL_DialogFileFilter filter = { "WebM Video Files", "webm" };
+
+    int file_chosen = 0;
+
+    SDL_PropertiesID file_dialog_properties = SDL_CreateProperties();
+
+    if (file_dialog_properties) {
+        SDL_SetPointerProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, &filter);
+        SDL_SetNumberProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 1);
+        SDL_SetStringProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_TITLE_STRING, "Please select a WebM video file:");
+        SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, selected_file, &file_chosen, file_dialog_properties);
+    } else {
+        SDL_ShowOpenFileDialog(selected_file, &file_chosen, NULL, &filter, 1, NULL, false);
+    }
+
+    while (!file_chosen) {
+        SDL_Delay(5);
+    }
+
+    if (!data.options.filename) {
+        return 0;
+    }
+
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -1032,6 +1084,15 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (!data.options.filename && !show_open_file_dialog()) {
+        const char *file_name = parse_file_name(argv[0]);
+
+        printf("Usage: \"%s [OPTIONS] <filename>\"\n\n", file_name);  
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Select a file", "Please select a valid video file.", NULL);
+
+        return 1;
+    }
+
     init_easyav1(data.options.filename);
 
     if (!data.easyav1) {
@@ -1043,6 +1104,7 @@ int main(int argc, char **argv)
     if (!init_sdl()) {
         printf("Failed to initialize SDL.\n");
         easyav1_destroy(&data.easyav1);
+		close_file_stream();
 
         return 3;
     }
@@ -1051,6 +1113,7 @@ int main(int argc, char **argv)
         printf("Failed to initialize fonts.\n");
         quit_sdl();
         easyav1_destroy(&data.easyav1);
+        close_file_stream();
 
         return 4;
     }
@@ -1060,6 +1123,7 @@ int main(int argc, char **argv)
     if (!init_decoder_thread()) {
         quit_sdl();
         easyav1_destroy(&data.easyav1);
+        close_file_stream();
 
         return 5;
     }
@@ -1090,7 +1154,7 @@ int main(int argc, char **argv)
                 SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
             }
 
-            SDL_RenderCopy(data.SDL.renderer, data.SDL.textures.video, NULL, get_aspect_ratio_rect());
+            SDL_RenderTexture(data.SDL.renderer, data.SDL.textures.video, NULL, get_aspect_ratio_rect());
         }
 
         draw_time_bar();
@@ -1101,8 +1165,12 @@ int main(int argc, char **argv)
 
         SDL_RenderPresent(data.SDL.renderer);
 
-        if (data.options.loop && easyav1_is_finished(data.easyav1)) {
-            request_seeking(SEEK_TO, 0);
+        if (easyav1_is_finished(data.easyav1)) {
+            SDL_FlushAudioStream(data.SDL.audio_stream);
+
+            if (data.options.loop) {
+                request_seeking(SEEK_TO, 0);
+            }
         }
     }
 
@@ -1111,6 +1179,8 @@ int main(int argc, char **argv)
     quit_sdl();
 
     easyav1_destroy(&data.easyav1);
+
+    close_file_stream();
 
     return 0;
 }
