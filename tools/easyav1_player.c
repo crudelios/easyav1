@@ -925,7 +925,7 @@ static void draw_time_bar(void)
     }
 }
 
-static void draw_play_icon(unsigned int size, uint8_t opacity)
+static void draw_play_icon(unsigned int size, float opacity)
 {
     size -= size % 2;
 
@@ -937,13 +937,13 @@ static void draw_play_icon(unsigned int size, uint8_t opacity)
     int height;
     SDL_GetWindowSize(data.SDL.window, &width, &height);
 
-    int x = (width - size) / 2;
-    int y = (height - size) / 2;
+    float x = (width - size) / 2.0f;
+    float y = (height - size) / 2.0f;
 
     SDL_Vertex vertices[3] = {
-        { .position.x = x, .position.y = y, .color = { 255, 255, 255, opacity } },
-        { .position.x = x + size, .position.y = y + size / 2, .color = { 255, 255, 255, opacity } },
-        { .position.x = x, .position.y = y + size, .color = { 255, 255, 255, opacity } }
+        { .position.x = x, .position.y = y, .color = { 1, 1, 1, opacity } },
+        { .position.x = x + size, .position.y = y + size / 2.0f, .color = { 1, 1, 1, opacity } },
+        { .position.x = x, .position.y = y + size, .color = { 1, 1, 1, opacity } }
     };
     SDL_RenderGeometry(data.SDL.renderer, 0, vertices, 3, 0, 0);
 }
@@ -987,7 +987,7 @@ static void draw_play_pause_animation(void)
     if (data.playback.paused) {
         draw_pause_icon(diff, 0xff - (diff * 0xff) / PLAY_PAUSE_ANIMATION_MS);
     } else {
-        draw_play_icon(diff, 0xff - (diff * 0xff) / PLAY_PAUSE_ANIMATION_MS);
+        draw_play_icon(diff, 1.0f - (diff / (float) PLAY_PAUSE_ANIMATION_MS));
     }
 }
 
