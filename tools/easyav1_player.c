@@ -48,7 +48,9 @@ static const char FONT[FONT_IMAGE_COLS * FONT_IMAGE_ROWS][FONT_HEIGHT] = {
     { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C },   // :
 };
 
+#ifndef HAS_RENDER_GEOMETRY
 static SDL_Point play_icon_points[MAX_PLAY_BUTTON_SIZE + MAX_PLAY_BUTTON_SIZE / 2 + 1];
+#endif
 
 static struct {
     int x;
