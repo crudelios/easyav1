@@ -13,7 +13,7 @@
 
 #define AUDIO_BUFFER_SIZE 4096
 #define PACKET_QUEUE_BASE_CAPACITY 8
-#define PRELOADED_VIDEO_FRAMES 10
+#define VIDEO_FRAME_QUEUE_SIZE 20
 
 #define VORBIS_HEADERS_COUNT 3
 
@@ -57,6 +57,11 @@ typedef struct {
     size_t begin;
 } easyav1_packet_queue;
 
+typedef struct {
+    Dav1dPicture pic;
+    easyav1_bool displayed;
+} queued_video_frame_t;
+
 struct easyav1_t {
 
     struct {
@@ -68,18 +73,7 @@ struct easyav1_t {
 
     struct {
 
-        struct {
-            Dav1dContext *context;
-
-            struct {
-                Dav1dPicture pic[PRELOADED_VIDEO_FRAMES];
-                size_t count;
-                size_t begin;
-            } frames;
-
-        } av1;
-
-        easyav1_bool has_picture_to_output;
+        Dav1dContext *context;
 
         easyav1_bool active;
         unsigned int track;
@@ -91,6 +85,13 @@ struct easyav1_t {
 
         uint64_t processed_frames;
 
+        struct {
+            queued_video_frame_t frames[VIDEO_FRAME_QUEUE_SIZE];
+
+            size_t count;
+            size_t begin;
+        } frame_queue;
+
         easyav1_video_frame frame;
 
         struct {
@@ -99,8 +100,9 @@ struct easyav1_t {
             cnd_t has_packets;
             cnd_t has_frames;
             thrd_t decoder;
+            easyav1_bool exiting;
 
-        } thread;
+        } decoder_thread;
 
     } video;
 
@@ -978,7 +980,7 @@ static easyav1_bool must_fetch_video(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    if (easyav1->packets.video_queue.count >= PRELOADED_VIDEO_FRAMES) {
+    if (easyav1->packets.video_queue.count >= VIDEO_FRAME_QUEUE_SIZE / 2) {
         return EASYAV1_FALSE;
     }
 
@@ -1165,7 +1167,7 @@ static void callback_video(easyav1_t *easyav1)
 
     easyav1->settings.callbacks.video(frame, easyav1->settings.callbacks.userdata);
 
-    dav1d_picture_unref(&easyav1->video.av1.pic);
+    dequeue_used_frames(easyav1);
 }
 
 static easyav1_status decode_video(easyav1_t *easyav1, uint8_t *data, size_t size)
@@ -1238,10 +1240,6 @@ static easyav1_status decode_video(easyav1_t *easyav1, uint8_t *data, size_t siz
         easyav1->video.av1.pic = pic;
         easyav1->video.has_picture_to_output = 1;
         easyav1->video.processed_frames++;
-
-        if (!easyav1->settings.skip_unprocessed_frames) {
-            callback_video(easyav1);
-        }
 
     } while (buf.sz > 0);
 
@@ -1446,6 +1444,10 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
       ///  if (easyav1->seek == SEEKING_FOR_KEYFRAME && packet->is_keyframe == EASYAV1_TRUE) {
       //      easyav1->seek = SEEKING_FOUND_KEYFRAME;
       //  }
+        
+        if (!easyav1->settings.skip_unprocessed_frames) {
+            callback_video(easyav1);
+        }
 
         return EASYAV1_STATUS_OK;
     }
@@ -1486,6 +1488,12 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
     if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
         return EASYAV1_STATUS_ERROR;
     }
+
+    mtx_lock(&easyav1->video.thread.mutex);
+
+    dequeue_used_video_frames(easyav1);
+
+    mtx_unlock(&easyav1->video.thread.mutex);
 
     easyav1_packet *packet = get_next_packet(easyav1);
 
@@ -1560,6 +1568,12 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
     if (timestamp <= easyav1->timestamp.playback) {
         return EASYAV1_STATUS_OK;
     }
+
+    mtx_lock(&easyav1->video.thread.mutex);
+
+    dequeue_used_video_frames(easyav1);
+
+    mtx_unlock(&easyav1->video.thread.mutex);
 
     // Skip to timestamp if too far behind and at different cue points
     if (easyav1->settings.skip_unprocessed_frames == EASYAV1_TRUE &&
@@ -1803,6 +1817,72 @@ easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
  * Output functions
  */
 
+static queued_video_frame_t *retrieve_oldest_undisplayed_video_frame(easyav1_t *easyav1)
+{
+    for (size_t i = 0; i < easyav1->video.frame_queue.count; i++) {
+        size_t index = (easyav1->video.frame_queue.begin + i) % VIDEO_FRAME_QUEUE_SIZE;
+
+        if (easyav1->video.frame_queue.frames[index].displayed == EASYAV1_FALSE &&
+            easyav1->video.frame_queue.frames[i].pic.m.timestamp <= easyav1->timestamp.playback) {
+            return &easyav1->video.frame_queue.frames[index];
+        }
+    }
+
+    return NULL;
+}
+
+static void dequeue_video_frame(easyav1_t *easyav1)
+{
+    queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
+
+    dav1d_picture_unref(&frame->pic);
+    frame->displayed = EASYAV1_FALSE;
+    easyav1->video.frame_queue.count--;
+
+    if (easyav1->video.frame_queue.count == 0) {
+        easyav1->video.frame_queue.begin = 0;
+    } else {
+        easyav1->video.frame_queue.begin = (easyav1->video.frame_queue.begin + 1) % VIDEO_FRAME_QUEUE_SIZE;
+    }
+}
+
+static void dequeue_used_video_frames(easyav1_t *easyav1)
+{
+    queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
+
+    while (easyav1->video.frame_queue.count > 0 && frame->displayed == EASYAV1_TRUE) {
+        dequeue_video_frame(easyav1);
+        frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
+    }
+
+    if (easyav1->video.frame_queue.count == 0) {
+        easyav1->video.frame_queue.begin = 0;
+    }
+}
+
+static void dequeue_all_video_frames(easyav1_t *easyav1)
+{
+    while (easyav1->video.frame_queue.count > 0) {
+        dequeue_video_frame(easyav1);
+    }
+}
+
+static queued_video_frame_t *enqueue_video_frame(easyav1_t *easyav1)
+{
+    if (easyav1->video.frame_queue.count >= VIDEO_FRAME_QUEUE_SIZE) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Video frame queue is full, discarding oldest frame.");
+        dequeue_video_frame(easyav1);
+    }
+
+    size_t index = easyav1->video.frame_queue.begin + easyav1->video.frame_queue.count % VIDEO_FRAME_QUEUE_SIZE;
+    queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[index];
+    frame->displayed = EASYAV1_FALSE;
+
+    easyav1->video.frame_queue.count++;
+
+    return frame;
+}
+
 easyav1_bool easyav1_has_video_frame(const easyav1_t *easyav1)
 {
     if (!easyav1) {
@@ -1810,7 +1890,13 @@ easyav1_bool easyav1_has_video_frame(const easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    return easyav1->video.has_picture_to_output;
+    mtx_lock(&easyav1->video.thread.mutex);
+
+    easyav1_bool has_frame = retrieve_oldest_undisplayed_video_frame(easyav1) == NULL ? EASYAV1_FALSE : EASYAV1_TRUE;
+
+    mtx_unlock(&easyav1->video.thread.mutex);
+
+    return has_frame;
 }
 
 const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
@@ -1820,13 +1906,20 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
         return NULL;
     }
 
-    if (easyav1->video.has_picture_to_output == EASYAV1_FALSE) {
+    mtx_lock(&easyav1->video.thread.mutex);
+
+    queued_video_frame_t *queued_frame = retrieve_oldest_undisplayed_video_frame(easyav1);
+
+    if (!queued_frame) {
+        mtx_unlock(&easyav1->video.thread.mutex);
         return NULL;
     }
 
-    easyav1->video.has_picture_to_output = EASYAV1_FALSE;
-    Dav1dPicture *pic = &easyav1->video.av1.pic;
+    queued_frame->displayed = EASYAV1_TRUE;
+
     easyav1_picture_type type = EASYAV1_PICTURE_TYPE_UNKNOWN;
+
+    Dav1dPicture *pic = &queued_frame->pic;
 
     switch (pic->p.layout) {
         case DAV1D_PIXEL_LAYOUT_I400:
@@ -1842,7 +1935,7 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
             type = EASYAV1_PICTURE_TYPE_YUV444_8BPC;
             break;
         default:
-            dav1d_picture_unref(pic);
+            mtx_unlock(&easyav1->video.thread.mutex);
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout.");
             return NULL;
     }
@@ -1850,28 +1943,31 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
     if (pic->p.bpc == 10) {
         type += EASYAV1_PICTURE_TYPE_10BPC_OFFSET;
     } else if (pic->p.bpc != 8) {
-        dav1d_picture_unref(pic);
+        mtx_unlock(&easyav1->video.thread.mutex);
         log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported bit depth.");
         return NULL;
     }
 
-    easyav1_video_frame frame = {
-        .data = {
-            pic->data[0],
-            pic->data[1],
-            pic->data[2]
-        },
-        .stride = {
-            pic->stride[0],
-            pic->stride[1],
-            pic->stride[1]
-        },
-        .picture_type = type
-    };
+    easyav1_video_frame *frame = &easyav1->video.frame;
 
-    easyav1->video.preloaded_frames.frames[0] = frame;
+    frame->picture_type = type;
 
-    return easyav1->video.preloaded_frames.frames;
+    frame->data[0] = pic->data[0];
+    frame->data[1] = pic->data[1];
+    frame->data[2] = pic->data[2];
+
+    frame->stride[0] = pic->stride[0];
+    frame->stride[1] = pic->stride[1];
+    frame->stride[2] = pic->stride[1];
+
+    frame->width = (unsigned int) pic->p.w;
+    frame->height = (unsigned int) pic->p.h;
+
+    frame->timestamp = (uint64_t) pic->m.timestamp;
+
+    mtx_unlock(&easyav1->video.thread.mutex);
+
+    return frame;
 }
 
 uint64_t easyav1_get_total_video_frames_processed(const easyav1_t *easyav1)
@@ -2230,14 +2326,18 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
 
 static void destroy_video(easyav1_t *easyav1)
 {
-    if (easyav1->video.has_picture_to_output) {
-        dav1d_picture_unref(&easyav1->video.av1.pic);
-        memset(&easyav1->video.av1.pic, 0, sizeof(Dav1dPicture));
-    }
+    mtx_lock(&easyav1->video.decoder_thread.mutex);
 
-    if (easyav1->video.av1.context) {
-        dav1d_close(&easyav1->video.av1.context);
-        easyav1->video.av1.context = NULL;
+    easyav1->video.decoder_thread.exiting = EASYAV1_TRUE;
+    dequeue_all_video_frames(easyav1);
+
+    mtx_unlock(&easyav1->video.decoder_thread.mutex);
+
+    thrd_join(easyav1->video.decoder_thread.decoder, NULL);
+
+    if (easyav1->video.context) {
+        dav1d_close(&easyav1->video.context);
+        easyav1->video.context = NULL;
     }
 }
 

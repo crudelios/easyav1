@@ -191,9 +191,12 @@ typedef enum {
  * Video frame.
  */
 typedef struct {
+    easyav1_picture_type picture_type; // The picture type.
+    unsigned int width;  // The width of the frame.
+    unsigned int height; // The height of the frame.
+    easyav1_timestamp timestamp; // The timestamp of the frame.
     const void *data[3]; // The data for each YUV plane.
     size_t stride[3];    // The stride for each YUV plane.
-    easyav1_picture_type picture_type; // The picture type.
 } easyav1_video_frame;
 
 
@@ -203,6 +206,7 @@ typedef struct {
 typedef struct {
     unsigned int channels; // Number of channels.
     unsigned int samples;  // Number of samples in this frame.
+    easyav1_timestamp timestamp; // The timestamp of the frame.
     size_t bytes; // Number of bytes in this frame. This is equal to `samples * sizeof(float) * channels` if
                   // `interlace_audio` is 1, and `samples * sizeof(float)` if `interlace_audio` is 0.
     union {
