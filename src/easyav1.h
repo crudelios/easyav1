@@ -540,6 +540,16 @@ unsigned int easyav1_get_video_height(const easyav1_t *easyav1);
 
 
 /*
+ * Gets the FPS of the video track.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return The FPS of the video track, or `0` if there was an error or there is no video track.
+ */
+unsigned int easyav1_get_video_fps(const easyav1_t *easyav1);
+
+
+/*
  * Gets the number of audio channels.
  *
  * @param easyav1 The easyav1 instance.
@@ -566,7 +576,7 @@ unsigned int easyav1_get_audio_sample_rate(const easyav1_t *easyav1);
  *
  * @return `EASYAV1_TRUE` if a video frame is available, `EASYAV1_FALSE` otherwise.
  */
-easyav1_bool easyav1_has_video_frame(const easyav1_t *easyav1);
+easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1);
 
 /*
  * Gets the current video frame, is one is available.

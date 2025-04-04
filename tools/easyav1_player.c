@@ -332,6 +332,7 @@ static int init_easyav1(const char *filename)
     settings.enable_audio = !data.options.disable_audio;
     settings.enable_video = !data.options.disable_video;
     settings.use_fast_seeking = data.options.use_fast_seek;
+    settings.log_level = EASYAV1_LOG_LEVEL_INFO;
     if (data.options.log_level > 0) {
         if (data.options.log_level > 4) {
             data.options.log_level = 4;
