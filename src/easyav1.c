@@ -2418,22 +2418,6 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
  * Destruction functions
  */
 
-static void destroy_decoder_thread(easyav1_t *easyav1)
-{
-    easyav1->video.decoder_thread.exiting = EASYAV1_TRUE;
-
-    // Force the decoder thread to exit
-    cnd_signal(&easyav1->video.decoder_thread.has_packets);
-
-    thrd_join(easyav1->video.decoder_thread.decoder, NULL);
-
-    mtx_destroy(&easyav1->video.decoder_thread.mutex);
-    cnd_destroy(&easyav1->video.decoder_thread.has_packets);
-    cnd_destroy(&easyav1->video.decoder_thread.has_frames);
-
-    memset(&easyav1->video.decoder_thread, 0, sizeof(easyav1->video.decoder_thread));
-}
-
 static void destroy_video(easyav1_t *easyav1)
 {
     mtx_lock(&easyav1->video.decoder_thread.mutex);
@@ -2442,7 +2426,12 @@ static void destroy_video(easyav1_t *easyav1)
 
     mtx_unlock(&easyav1->video.decoder_thread.mutex);
 
-    destroy_decoder_thread(easyav1);
+    easyav1->video.decoder_thread.exiting = EASYAV1_TRUE;
+
+    // Force the decoder thread to exit
+    cnd_signal(&easyav1->video.decoder_thread.has_packets);
+
+    thrd_join(easyav1->video.decoder_thread.decoder, NULL);
 
     if (easyav1->video.context) {
         dav1d_close(&easyav1->video.context);
@@ -2491,6 +2480,10 @@ void easyav1_destroy(easyav1_t **handle)
     if (easyav1->webm.context) {
         nestegg_destroy(easyav1->webm.context);
     }
+
+    mtx_destroy(&easyav1->video.decoder_thread.mutex);
+    cnd_destroy(&easyav1->video.decoder_thread.has_packets);
+    cnd_destroy(&easyav1->video.decoder_thread.has_frames);
 
     if (easyav1->stream.data) {
         switch (easyav1->stream.type) {
