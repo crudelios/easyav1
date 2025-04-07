@@ -12,7 +12,7 @@
 #include <string.h>
 
 #define AUDIO_BUFFER_SIZE 4096
-#define PACKET_QUEUE_BASE_CAPACITY 8
+#define PACKET_QUEUE_BASE_CAPACITY 16
 #define VIDEO_FRAME_QUEUE_SIZE 20
 
 #define VORBIS_HEADERS_COUNT 3
@@ -96,7 +96,12 @@ struct easyav1_t {
 
         struct {
 
-            mtx_t mutex;
+            struct {
+                mtx_t input;
+                mtx_t decoder;
+                mtx_t output;
+            } mutexes;
+
             cnd_t has_packets;
             cnd_t has_frames;
             thrd_t decoder;
@@ -367,11 +372,96 @@ static int64_t memory_tell(void *userdata)
  * Initialization functions
  */
 
-static easyav1_status send_packet_data_to_decoder(easyav1_t *easyav1, easyav1_packet *packet, decoder_function decode);
-
-static easyav1_status decode_video(easyav1_t *easyav1, easyav1_packet *packet, uint8_t *data, size_t size);
-
 static easyav1_packet *get_unencoded_video_packet(easyav1_t *easyav1, easyav1_packet_queue *queue);
+
+static queued_video_frame_t *enqueue_video_frame(easyav1_t *easyav1);
+
+static void free_nothing(const uint8_t *data, void *cookie)
+{}
+
+static easyav1_status decode_video(easyav1_t *easyav1, easyav1_packet *packet)
+{
+    unsigned int chunks;
+
+    if (nestegg_packet_count(packet->packet, &chunks)) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get packet count");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    for (unsigned int chunk = 0; chunk < chunks; chunk++) {
+        unsigned char *data;
+        size_t size;
+
+        if (nestegg_packet_data(packet->packet, chunk, &data, &size)) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get data from packet");
+            return EASYAV1_STATUS_ERROR;
+        }
+
+        Dav1dData buf = { 0 };
+        int result = dav1d_data_wrap(&buf, data, size, free_nothing, 0);
+
+        if (result < 0) {
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to create data buffer");
+            return EASYAV1_STATUS_ERROR;
+        }
+
+        do {
+
+            result = dav1d_send_data(easyav1->video.context, &buf);
+            if (result < 0 && result != DAV1D_ERR(EAGAIN)) {
+                LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to send data to AV1 decoder");
+                dav1d_data_unref(&buf);
+                return EASYAV1_STATUS_ERROR;
+            }
+
+            Dav1dPicture pic = { 0 };
+
+            result = dav1d_get_picture(easyav1->video.context, &pic);
+
+            // For some reason, sometimes we need to insist on getting the picture without sending more data
+            if (result == DAV1D_ERR(EAGAIN)) {
+                result = dav1d_get_picture(easyav1->video.context, &pic);
+            }
+
+            if (result < 0) {
+                if (result == DAV1D_ERR(EAGAIN)) {
+                    continue;
+                }
+                LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get picture from AV1 decoder");
+                dav1d_data_unref(&buf);
+                return EASYAV1_STATUS_ERROR;
+            }
+
+            easyav1->video.processed_frames++;
+
+            if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                dav1d_picture_unref(&pic);
+                static Dav1dPicture empty_pic = { 0 };
+                packet->video_frame = &empty_pic;
+                continue;
+            }
+
+            if (!packet->video_frame) {
+                mtx_lock(&easyav1->video.decoder_thread.mutexes.output);
+
+                packet->video_frame = &enqueue_video_frame(easyav1)->pic;
+
+                mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
+            } else {
+                dav1d_picture_unref(packet->video_frame);
+            }
+
+            *packet->video_frame = pic;
+
+            packet->video_frame->m.timestamp = packet->timestamp;
+
+        } while (buf.sz > 0);
+
+        dav1d_data_unref(&buf);
+    }
+
+    return EASYAV1_STATUS_OK;
+}
 
 static int video_decoder_thread(void *arg)
 {
@@ -379,24 +469,29 @@ static int video_decoder_thread(void *arg)
 
     while (easyav1->video.decoder_thread.exiting == EASYAV1_FALSE && !EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
 
-        mtx_lock(&easyav1->video.decoder_thread.mutex);
+        mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
 
         easyav1_packet *packet = get_unencoded_video_packet(easyav1, &easyav1->packets.video_queue);
 
         while(packet == NULL) {
-            cnd_wait(&easyav1->video.decoder_thread.has_packets, &easyav1->video.decoder_thread.mutex);
+            cnd_wait(&easyav1->video.decoder_thread.has_packets, &easyav1->video.decoder_thread.mutexes.input);
 
             if (easyav1->video.decoder_thread.exiting == EASYAV1_TRUE) {
-                mtx_unlock(&easyav1->video.decoder_thread.mutex);
+                mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
                 return 0;
             }
 
             packet = get_unencoded_video_packet(easyav1, &easyav1->packets.video_queue);
         }
 
-        send_packet_data_to_decoder(easyav1, packet, decode_video);
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
 
-        mtx_unlock(&easyav1->video.decoder_thread.mutex);
+        mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
+
+        easyav1_status status = decode_video(easyav1, packet);
+
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
+
         cnd_signal(&easyav1->video.decoder_thread.has_frames);
     }
 
@@ -409,8 +504,10 @@ static easyav1_status init_decoder_thread(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (mtx_init(&easyav1->video.decoder_thread.mutex, mtx_plain) != thrd_success) {
-        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to create decoder thread mutex.");
+    if (mtx_init(&easyav1->video.decoder_thread.mutexes.input, mtx_plain) != thrd_success ||
+        mtx_init(&easyav1->video.decoder_thread.mutexes.decoder, mtx_plain) != thrd_success ||
+        mtx_init(&easyav1->video.decoder_thread.mutexes.output, mtx_plain) != thrd_success) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to create decoder thread mutexes.");
         return EASYAV1_STATUS_ERROR;
     }
 
@@ -887,11 +984,17 @@ static easyav1_status increase_packet_queue_capacity(easyav1_t *easyav1, easyav1
 
     memset(new_queue + queue->capacity, 0, PACKET_QUEUE_BASE_CAPACITY * sizeof(easyav1_packet));
 
+    // This is the only instance where we need to lock the decoder thread mutexes, because we are changing
+    // the packet queue's memory location and the video decoder may be using its data at the same time.
+    mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
+
     free(queue->items);
 
     queue->items = new_queue;
     queue->capacity = new_capacity;
     queue->begin = 0;
+
+    mtx_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
 
     return EASYAV1_STATUS_OK;
 }
@@ -907,7 +1010,7 @@ static easyav1_packet *get_unencoded_video_packet(easyav1_t *easyav1, easyav1_pa
 
         easyav1_packet *packet = &queue->items[index];
 
-        if (packet->type == PACKET_TYPE_VIDEO && packet->video_frame == NULL) {
+        if (packet->type == PACKET_TYPE_VIDEO && packet->packet != NULL && packet->video_frame == NULL) {
             return packet;
         }
     }
@@ -1030,16 +1133,16 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
         return NULL;
     }
 
-    if (type == PACKET_TYPE_VIDEO) {
-        mtx_lock(&easyav1->video.decoder_thread.mutex);
+    if (type == PACKET_TYPE_VIDEO && (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP)) {
+        mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
     }
 
     easyav1_packet *new_packet = queue_new_packet(easyav1, type == PACKET_TYPE_VIDEO ?
         &easyav1->packets.video_queue : &easyav1->packets.audio_queue);
 
     if (!new_packet) {
-        if (type == PACKET_TYPE_VIDEO) {
-            mtx_unlock(&easyav1->video.decoder_thread.mutex);
+        if (type == PACKET_TYPE_VIDEO && (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP)) {
+            mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
         }
         nestegg_free_packet(packet);
         LOG_AND_SET_ERROR(EASYAV1_STATUS_OUT_OF_MEMORY, "Failed to allocate memory for new packet.");
@@ -1051,8 +1154,8 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
     new_packet->is_keyframe = has_keyframe == NESTEGG_PACKET_HAS_KEYFRAME_TRUE ? EASYAV1_TRUE : EASYAV1_FALSE;
     new_packet->type = type;
 
-    if (type == PACKET_TYPE_VIDEO) {
-        mtx_unlock(&easyav1->video.decoder_thread.mutex);
+    if (type == PACKET_TYPE_VIDEO && (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP)) {
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
         cnd_signal(&easyav1->video.decoder_thread.has_packets);
     }
 
@@ -1061,7 +1164,8 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
 
 static easyav1_bool must_fetch_video(easyav1_t *easyav1)
 {
-    if (easyav1->video.active == EASYAV1_FALSE) {
+    if (easyav1->video.active == EASYAV1_FALSE ||
+        (easyav1->seek != NOT_SEEKING && easyav1->seek != SEEKING_FOR_TIMESTAMP)) {
         return EASYAV1_FALSE;
     }
 
@@ -1156,11 +1260,6 @@ static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet
         return;
     }
 
-    if (packet->type == PACKET_TYPE_VIDEO) {
-        mtx_lock(&easyav1->video.decoder_thread.mutex);
-    }
-
-    // Should always be true
     if (packet->packet) {
         nestegg_free_packet(packet->packet);
     }
@@ -1182,8 +1281,6 @@ static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet
     }
 
     memset(packet, 0, sizeof(easyav1_packet));
-
-    mtx_unlock(&easyav1->video.decoder_thread.mutex);
 
     if (easyav1->packets.all_fetched == EASYAV1_FALSE) {
         easyav1->packets.synced = EASYAV1_FALSE;
@@ -1207,7 +1304,6 @@ static void release_packet_queue(easyav1_t *easyav1, easyav1_packet_queue *queue
     free(queue->items);
     memset(queue, 0, sizeof(easyav1_packet_queue));
 }
-
 
 static easyav1_packet *get_next_packet(easyav1_t *easyav1)
 {
@@ -1242,9 +1338,6 @@ static easyav1_packet *get_next_packet(easyav1_t *easyav1)
  * Decoding functions
  */
 
-static void free_nothing(const uint8_t *data, void *cookie)
-{}
-
 static void dequeue_used_video_frames(easyav1_t *easyav1);
 
 static void callback_video(easyav1_t *easyav1)
@@ -1264,84 +1357,21 @@ static void callback_video(easyav1_t *easyav1)
     dequeue_used_video_frames(easyav1);
 }
 
-static queued_video_frame_t *enqueue_video_frame(easyav1_t *easyav1);
-
-static easyav1_status decode_video(easyav1_t *easyav1, easyav1_packet *packet, uint8_t *data, size_t size)
+static easyav1_status seek_sequence_header(easyav1_t *easyav1, easyav1_packet *packet, uint8_t *data, size_t size)
 {
-    // Handle seeking
-    if (easyav1->seek == SEEKING_FOR_SQHDR) {
-        Dav1dSequenceHeader seq_hdr;
+    Dav1dSequenceHeader sequence_header;
 
-        int result = dav1d_parse_sequence_header(&seq_hdr, data, size);
+    int result = dav1d_parse_sequence_header(&sequence_header, data, size);
 
-        if (result < 0 && result != DAV1D_ERR(ENOENT)) {
-            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to parse sequence header");
-            return EASYAV1_STATUS_ERROR;
-        }
-
-        if (result == 0) {
-            easyav1->seek = SEEKING_FOR_KEYFRAME;
-        } else {
-            return EASYAV1_STATUS_OK;
-        }
-    }
-
-    Dav1dData buf = { 0 };
-    int result = dav1d_data_wrap(&buf, data, size, free_nothing, 0);
-
-    if (result < 0) {
-        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to create data buffer");
+    if (result < 0 && result != DAV1D_ERR(ENOENT)) {
+        LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to parse sequence header");
         return EASYAV1_STATUS_ERROR;
     }
 
-    do {
-
-        result = dav1d_send_data(easyav1->video.context, &buf);
-        if (result < 0 && result != DAV1D_ERR(EAGAIN)) {
-            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to send data to AV1 decoder");
-            dav1d_data_unref(&buf);
-            return EASYAV1_STATUS_ERROR;
-        }
-
-        Dav1dPicture pic = { 0 };
-
-        result = dav1d_get_picture(easyav1->video.context, &pic);
-
-        // For some reason, sometimes we need to insist on getting the picture without sending more data
-        if (result == DAV1D_ERR(EAGAIN)) {
-            result = dav1d_get_picture(easyav1->video.context, &pic);
-        }
-
-        if (result < 0) {
-            if (result == DAV1D_ERR(EAGAIN)) {
-                continue;
-            }
-            LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to get picture from AV1 decoder");
-            dav1d_data_unref(&buf);
-            return EASYAV1_STATUS_ERROR;
-        }
-
-        easyav1->video.processed_frames++;
-
-        if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-            dav1d_picture_unref(&pic);
-            continue;
-        }
-
-        if (!packet->video_frame) {
-            packet->video_frame = &enqueue_video_frame(easyav1)->pic;
-        } else {
-            dav1d_picture_unref(packet->video_frame);
-        }
-
-        *packet->video_frame = pic;
-
-        packet->video_frame->m.timestamp = packet->timestamp;
-
-    } while (buf.sz > 0);
-
-    dav1d_data_unref(&buf);
-
+    if (result == 0) {
+        easyav1->seek = SEEKING_FOR_KEYFRAME;
+    }
+    
     return EASYAV1_STATUS_OK;
 }
 
@@ -1485,64 +1515,49 @@ static easyav1_status send_packet_data_to_decoder(easyav1_t *easyav1, easyav1_pa
     }
 }
 
-static void dequeue_skipped_video_frames(easyav1_t *easyav1);
-
 static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
 {
-    if (packet->type == PACKET_TYPE_VIDEO) {
+    if (packet->type == PACKET_TYPE_AUDIO) {
+        return send_packet_data_to_decoder(easyav1, packet, decode_audio);
+    }
 
-        // Not seeking: use multithreaded decoder
-        if (easyav1->seek == NOT_SEEKING) {
+    // Decoding video: use multithreaded decoder
+    if (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP) {
 
-            mtx_lock(&easyav1->video.decoder_thread.mutex);
+        mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
 
-            while (!packet->video_frame) {
-                log(EASYAV1_LOG_LEVEL_INFO, "Waiting for video frame to be decoded.");
-                cnd_wait(&easyav1->video.decoder_thread.has_frames, &easyav1->video.decoder_thread.mutex);
-            }
+        while (!packet->video_frame) {
+            log(EASYAV1_LOG_LEVEL_INFO, "Waiting for video frame to be decoded.");
+            cnd_wait(&easyav1->video.decoder_thread.has_frames, &easyav1->video.decoder_thread.mutexes.decoder);
+        }
 
-            mtx_unlock(&easyav1->video.decoder_thread.mutex);
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
 
-            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
-                return EASYAV1_STATUS_ERROR;
-            }
+        if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+            return EASYAV1_STATUS_ERROR;
+        }
 
-            if (easyav1->settings.callbacks.video == NULL || easyav1->settings.skip_unprocessed_frames == EASYAV1_TRUE) {
-                dequeue_skipped_video_frames(easyav1);
-            } else {
-                callback_video(easyav1);
-            }
-
-        // Seeking: use single-threaded decoder
-        } else {
-
-            if (easyav1->seek == SEEKING_FOR_KEYFRAME) {
-                if (packet->is_keyframe == EASYAV1_TRUE) {
-                    easyav1->seek = SEEKING_FOUND_KEYFRAME;
-                }
-
-                return EASYAV1_STATUS_OK;
-            }
-
-            if (easyav1->seek == SEEKING_FOUND_KEYFRAME) {
-                return EASYAV1_STATUS_OK;
-            }
-
-            easyav1_status status = send_packet_data_to_decoder(easyav1, packet, decode_video);
-
-            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
-                return EASYAV1_STATUS_ERROR;
-            }
-
-            if (easyav1->seek == SEEKING_FOR_KEYFRAME && packet->is_keyframe == EASYAV1_TRUE) {
-                easyav1->seek = SEEKING_FOUND_KEYFRAME;
-            }
+        if (easyav1->settings.skip_unprocessed_frames == EASYAV1_FALSE) {
+            callback_video(easyav1);
         }
 
         return EASYAV1_STATUS_OK;
     }
 
-    return send_packet_data_to_decoder(easyav1, packet, decode_audio);
+    // Seeking, do not decode video frames
+    if (easyav1->seek == SEEKING_FOR_SQHDR) {
+        easyav1_status status = send_packet_data_to_decoder(easyav1, packet, seek_sequence_header);
+
+        if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+            return EASYAV1_STATUS_ERROR;
+        }
+    }
+
+    if (easyav1->seek == SEEKING_FOR_KEYFRAME && packet->is_keyframe == EASYAV1_TRUE) {
+        easyav1->seek = SEEKING_FOUND_KEYFRAME;
+    }
+
+    return EASYAV1_STATUS_OK;
 }
 
 easyav1_status easyav1_decode_next(easyav1_t *easyav1)
@@ -1556,11 +1571,11 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    mtx_lock(&easyav1->video.decoder_thread.mutex);
+    mtx_lock(&easyav1->video.decoder_thread.mutexes.output);
 
     dequeue_used_video_frames(easyav1);
 
-    mtx_unlock(&easyav1->video.decoder_thread.mutex);
+    mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
 
     easyav1_packet *packet = get_next_packet(easyav1);
 
@@ -1575,7 +1590,16 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
     easyav1->timestamp.playback = packet->timestamp;
 
     easyav1_status status = decode_packet(easyav1, packet);
+
+    if (packet->type == PACKET_TYPE_VIDEO) {
+        mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
+    }
+
     release_packet_from_queue(easyav1, packet);
+
+    if (packet->type == PACKET_TYPE_VIDEO) {
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+    }
 
     if (status == EASYAV1_STATUS_OK) {
         callback_video(easyav1);
@@ -1636,11 +1660,11 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         return EASYAV1_STATUS_OK;
     }
 
-    mtx_lock(&easyav1->video.decoder_thread.mutex);
+    mtx_lock(&easyav1->video.decoder_thread.mutexes.output);
 
     dequeue_used_video_frames(easyav1);
 
-    mtx_unlock(&easyav1->video.decoder_thread.mutex);
+    mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
 
     // Skip to timestamp if too far behind and at different cue points
     if (easyav1->settings.skip_unprocessed_frames == EASYAV1_TRUE &&
@@ -1674,7 +1698,16 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         easyav1->timestamp.playback = packet->timestamp;
 
         easyav1_status status = decode_packet(easyav1, packet);
+
+        if (packet->type == PACKET_TYPE_VIDEO) {
+            mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
+        }
+    
         release_packet_from_queue(easyav1, packet);
+
+        if (packet->type == PACKET_TYPE_VIDEO) {
+            mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+        }
     }
 
     if (status == EASYAV1_STATUS_OK) {
@@ -1699,15 +1732,30 @@ easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
  * Seeking functions
  */
 
+static void dequeue_all_video_frames(easyav1_t *easyav1);
+
+static void pause_video_decoder(easyav1_t *easyav1)
+{
+    mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
+
+    // Wait for the video decoder to finish processing pending frame
+    if (get_unencoded_video_packet(easyav1, &easyav1->packets.video_queue) == NULL) {
+        return;
+    }
+
+    unsigned int pending_frames = easyav1->video.frame_queue.count;
+
+    while (easyav1->status != EASYAV1_STATUS_FINISHED && pending_frames == easyav1->video.frame_queue.count) {
+        cnd_wait(&easyav1->video.decoder_thread.has_frames, &easyav1->video.decoder_thread.mutexes.input);
+    }
+}
+
 easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
         return EASYAV1_STATUS_ERROR;
     }
-
-    log(EASYAV1_LOG_LEVEL_WARNING, "Seeking unimplemented.");
-    return EASYAV1_STATUS_OK;
 
     if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
         return EASYAV1_STATUS_ERROR;
@@ -1745,6 +1793,8 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
     easyav1_bool audio_is_active = easyav1->audio.active;
 
+    pause_video_decoder(easyav1);
+
     easyav1->status = EASYAV1_STATUS_OK;
 
     for (int pass = 0; pass < 2; pass++) {
@@ -1753,6 +1803,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
         if (nestegg_track_seek(easyav1->webm.context, track, ms_to_internal_timestmap(easyav1, corrected_timestamp))) {
             LOG_AND_SET_ERROR(EASYAV1_STATUS_IO_ERROR, "Failed to seek to requested timestamp %u.", easyav1->timestamp);
+            mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
             return EASYAV1_STATUS_ERROR;
         }
 
@@ -1764,10 +1815,9 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         easyav1->status = EASYAV1_STATUS_OK;
 
         if (easyav1->video.active == EASYAV1_TRUE) {
-         //   dav1d_picture_unref(&easyav1->video.av1.pic);
-         //   dav1d_flush(easyav1->video.av1.context);
-         //   easyav1->seek = SEEKING_FOR_SQHDR;
-         //   easyav1->video.has_picture_to_output = 0;
+            dequeue_all_video_frames(easyav1);
+            dav1d_flush(easyav1->video.context);
+            easyav1->seek = SEEKING_FOR_SQHDR;
         }
 
         if (audio_is_active) {
@@ -1793,6 +1843,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
             easyav1_packet *packet = get_next_packet(easyav1);
 
             if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+                mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
                 return EASYAV1_STATUS_ERROR;
             }
 
@@ -1805,9 +1856,14 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                     // resume playing immediately after we get to the last keyframe before the requested timestamp
                     if (easyav1->settings.use_fast_seeking == EASYAV1_TRUE) {
                         easyav1->seek = NOT_SEEKING;
+                        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+                        cnd_signal(&easyav1->video.decoder_thread.has_packets);
+
                         break;
                     } else {
                         easyav1->seek = SEEKING_FOR_TIMESTAMP;
+                        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+                        cnd_signal(&easyav1->video.decoder_thread.has_packets);
                     }
                 } else if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
                     easyav1->seek = SEEKING_FOUND_KEYFRAME;
@@ -1825,6 +1881,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                         LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR,
                             "Unable to seek, no sequence header or keyframes found. Aborting.");
                         release_packet_from_queue(easyav1, packet);
+                        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
                         return EASYAV1_STATUS_ERROR;
                     }
 
@@ -1837,8 +1894,12 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                 break;
             }
 
+            seeking_mode last_seek_mode = easyav1->seek;
+
             if (decode_packet(easyav1, packet) == EASYAV1_STATUS_ERROR) {
-                release_packet_from_queue(easyav1, packet);
+                if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
+                    mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+                }
                 return EASYAV1_STATUS_ERROR;
             }
 
@@ -1847,15 +1908,21 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                 easyav1->seek = SEEKING_FOR_KEYFRAME;
             }
 
-            release_packet_from_queue(easyav1, packet);
+            // If we found a sequence header, we may need to decode the video frame from this packet.
+            // To do that, we need to keep the packet so it's fetched again and properly decoded.
+            if (pass == 0 || (pass == 1 && (last_seek_mode != SEEKING_FOR_SQHDR || last_seek_mode == easyav1->seek ||
+                packet->timestamp < last_keyframe_timestamp))) {
+                release_packet_from_queue(easyav1, packet);
+            }
         }
     }
 
     easyav1->status = EASYAV1_STATUS_OK;
-    
-    log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->timestamp, original_timestamp);
 
-    return 1;
+    log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->timestamp.playback,
+        original_timestamp);
+
+    return EASYAV1_STATUS_OK;
 }
 
 easyav1_status easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time)
@@ -1887,18 +1954,31 @@ easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
  * Output functions
  */
 
-static queued_video_frame_t *retrieve_oldest_undisplayed_video_frame(easyav1_t *easyav1)
+static queued_video_frame_t *retrieve_undisplayed_video_frame(easyav1_t *easyav1)
 {
+    queued_video_frame_t *frame = NULL;
+
+    unsigned int frame_count = 0;
+
     for (size_t i = 0; i < easyav1->video.frame_queue.count; i++) {
         size_t index = (easyav1->video.frame_queue.begin + i) % VIDEO_FRAME_QUEUE_SIZE;
 
         if (easyav1->video.frame_queue.frames[index].displayed == EASYAV1_FALSE &&
             easyav1->video.frame_queue.frames[index].pic.m.timestamp <= easyav1->timestamp.playback) {
-            return &easyav1->video.frame_queue.frames[index];
+            if (frame) {
+                frame_count++;
+            }
+            frame = &easyav1->video.frame_queue.frames[index];
+        } else if (easyav1->video.frame_queue.frames[index].pic.m.timestamp > easyav1->timestamp.playback) {
+            break;
         }
     }
 
-    return NULL;
+    if (frame_count > 0) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Skipping %u video frames.", frame_count);
+    }
+
+    return frame;
 }
 
 static void dequeue_video_frame(easyav1_t *easyav1)
@@ -1918,27 +1998,28 @@ static void dequeue_video_frame(easyav1_t *easyav1)
 
 static void dequeue_used_video_frames(easyav1_t *easyav1)
 {
+    queued_video_frame_t *displayed_frame = NULL;
+
+    for (size_t i = 0; i < easyav1->video.frame_queue.count; i++) {
+        size_t index = (easyav1->video.frame_queue.begin + i) % VIDEO_FRAME_QUEUE_SIZE;
+
+        if (easyav1->video.frame_queue.frames[index].displayed == EASYAV1_TRUE) {
+            displayed_frame = &easyav1->video.frame_queue.frames[index];
+        }
+    }
+
+    if (displayed_frame == NULL) {
+        return;
+    }
+
     queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
 
-    while (easyav1->video.frame_queue.count > 0 && frame->displayed == EASYAV1_TRUE) {
+    while (frame != displayed_frame) {
         dequeue_video_frame(easyav1);
         frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
     }
 
-    if (easyav1->video.frame_queue.count == 0) {
-        easyav1->video.frame_queue.begin = 0;
-    }
-}
-
-static void dequeue_skipped_video_frames(easyav1_t *easyav1)
-{
-    queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
-
-    while (easyav1->video.frame_queue.count > 0 && frame->displayed == EASYAV1_FALSE &&
-        frame->pic.m.timestamp < easyav1->timestamp.playback) {
-        dequeue_video_frame(easyav1);
-        frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
-    }
+    dequeue_video_frame(easyav1);
 
     if (easyav1->video.frame_queue.count == 0) {
         easyav1->video.frame_queue.begin = 0;
@@ -1975,11 +2056,7 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    mtx_lock(&easyav1->video.decoder_thread.mutex);
-
-    easyav1_bool has_frame = retrieve_oldest_undisplayed_video_frame(easyav1) == NULL ? EASYAV1_FALSE : EASYAV1_TRUE;
-
-    mtx_unlock(&easyav1->video.decoder_thread.mutex);
+    easyav1_bool has_frame = retrieve_undisplayed_video_frame(easyav1) == NULL ? EASYAV1_FALSE : EASYAV1_TRUE;
 
     return has_frame;
 }
@@ -1991,12 +2068,12 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
         return NULL;
     }
 
-    mtx_lock(&easyav1->video.decoder_thread.mutex);
+    mtx_lock(&easyav1->video.decoder_thread.mutexes.output);
 
-    queued_video_frame_t *queued_frame = retrieve_oldest_undisplayed_video_frame(easyav1);
+    queued_video_frame_t *queued_frame = retrieve_undisplayed_video_frame(easyav1);
 
     if (!queued_frame) {
-        mtx_unlock(&easyav1->video.decoder_thread.mutex);
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
         return NULL;
     }
 
@@ -2020,7 +2097,7 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
             type = EASYAV1_PICTURE_TYPE_YUV444_8BPC;
             break;
         default:
-            mtx_unlock(&easyav1->video.decoder_thread.mutex);
+            mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout.");
             return NULL;
     }
@@ -2028,7 +2105,7 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
     if (pic->p.bpc == 10) {
         type += EASYAV1_PICTURE_TYPE_10BPC_OFFSET;
     } else if (pic->p.bpc != 8) {
-        mtx_unlock(&easyav1->video.decoder_thread.mutex);
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
         log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported bit depth: %d.", pic->p.bpc);
         return NULL;
     }
@@ -2050,7 +2127,7 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
 
     frame->timestamp = (uint64_t) pic->m.timestamp;
 
-    mtx_unlock(&easyav1->video.decoder_thread.mutex);
+    mtx_unlock(&easyav1->video.decoder_thread.mutexes.output);
 
     return frame;
 }
@@ -2420,13 +2497,13 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
 
 static void destroy_video(easyav1_t *easyav1)
 {
-    mtx_lock(&easyav1->video.decoder_thread.mutex);
-
+    pause_video_decoder(easyav1);
+    
     dequeue_all_video_frames(easyav1);
 
-    mtx_unlock(&easyav1->video.decoder_thread.mutex);
-
     easyav1->video.decoder_thread.exiting = EASYAV1_TRUE;
+
+    mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
 
     // Force the decoder thread to exit
     cnd_signal(&easyav1->video.decoder_thread.has_packets);
@@ -2481,7 +2558,9 @@ void easyav1_destroy(easyav1_t **handle)
         nestegg_destroy(easyav1->webm.context);
     }
 
-    mtx_destroy(&easyav1->video.decoder_thread.mutex);
+    mtx_destroy(&easyav1->video.decoder_thread.mutexes.input);
+    mtx_destroy(&easyav1->video.decoder_thread.mutexes.decoder);
+    mtx_destroy(&easyav1->video.decoder_thread.mutexes.output);
     cnd_destroy(&easyav1->video.decoder_thread.has_packets);
     cnd_destroy(&easyav1->video.decoder_thread.has_frames);
 
