@@ -153,11 +153,7 @@ struct easyav1_t {
 
     easyav1_settings settings;
 
-    struct {
-        easyav1_timestamp decoder;
-        easyav1_timestamp playback;
-    } timestamp;
-
+    easyav1_timestamp position;
     easyav1_timestamp duration;
     easyav1_timestamp time_scale;
 
@@ -783,6 +779,8 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
     return EASYAV1_STATUS_OK;
 }
 
+static easyav1_status sync_queues(easyav1_t *easyav1);
+
 easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const easyav1_settings *settings)
 {
     easyav1_t *easyav1 = NULL;
@@ -848,7 +846,7 @@ easyav1_t *easyav1_init_from_custom_stream(const easyav1_stream *stream, const e
     log(EASYAV1_LOG_LEVEL_INFO, "File duration: %llu minutes and %llu seconds.",
         easyav1->duration / 60000, (easyav1->duration / 1000) % 60);
 
-    if (init_webm_tracks(easyav1) == EASYAV1_STATUS_ERROR) {
+    if (init_webm_tracks(easyav1) == EASYAV1_STATUS_ERROR || sync_queues(easyav1) != EASYAV1_STATUS_OK) {
         easyav1_destroy(&easyav1);
         return NULL;
     }
@@ -1221,7 +1219,7 @@ static easyav1_status sync_queues(easyav1_t *easyav1)
         (must_fetch_video(easyav1) || !early_packet ||
         ((!late_packet || late_packet->timestamp < early_packet->timestamp) &&
         early_packet->timestamp - start_timestamp <= abs_audio_offset) &&
-        early_packet->timestamp <= easyav1->timestamp.playback)) {
+        early_packet->timestamp <= easyav1->position)) {
 
         easyav1_packet *packet = prepare_new_packet(easyav1);
 
@@ -1528,7 +1526,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
         mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
 
         while (!packet->video_frame) {
-            log(EASYAV1_LOG_LEVEL_WARNING, "Waiting for video frame to be decoded.");
+            log(EASYAV1_LOG_LEVEL_INFO, "Waiting for video frame to be decoded.");
             cnd_wait(&easyav1->video.decoder_thread.has_frames, &easyav1->video.decoder_thread.mutexes.decoder);
         }
 
@@ -1588,7 +1586,7 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    easyav1->timestamp.playback = packet->timestamp;
+    easyav1->position = packet->timestamp;
 
     easyav1_status status = decode_packet(easyav1, packet);
 
@@ -1657,7 +1655,7 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         return EASYAV1_STATUS_FINISHED;
     }
 
-    if (timestamp <= easyav1->timestamp.playback) {
+    if (timestamp <= easyav1->position) {
         return EASYAV1_STATUS_OK;
     }
 
@@ -1669,10 +1667,10 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
 
     // Skip to timestamp if too far behind and at different cue points
     if (easyav1->settings.skip_unprocessed_frames == EASYAV1_TRUE &&
-        timestamp - easyav1->timestamp.playback > DECODE_UNTIL_SKIP_MS &&
-        get_closest_cue_point(easyav1, easyav1->timestamp.playback) < get_closest_cue_point(easyav1, timestamp - 30)) {
+        timestamp - easyav1->position > DECODE_UNTIL_SKIP_MS &&
+        get_closest_cue_point(easyav1, easyav1->position) < get_closest_cue_point(easyav1, timestamp - 30)) {
         log(EASYAV1_LOG_LEVEL_INFO, "Decoder too far behind at %llu, skipping to requested timestamp %llu.",
-            easyav1->timestamp.playback, timestamp);
+            easyav1->position, timestamp);
 
         // Leave 30ms difference to get something actually decoded on this run
         easyav1_seek_to_timestamp(easyav1, timestamp - 30);
@@ -1696,7 +1694,7 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
             return EASYAV1_STATUS_ERROR;
         }
 
-        easyav1->timestamp.playback = packet->timestamp;
+        easyav1->position = packet->timestamp;
 
         easyav1_status status = decode_packet(easyav1, packet);
 
@@ -1712,7 +1710,7 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
     }
 
     if (status == EASYAV1_STATUS_OK) {
-        easyav1->timestamp.playback = timestamp;
+        easyav1->position = timestamp;
     }
 
     if (status != EASYAV1_STATUS_ERROR) {
@@ -1725,7 +1723,7 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
 
 easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
 {
-    return easyav1_decode_until(easyav1, easyav1->timestamp.playback + time);
+    return easyav1_decode_until(easyav1, easyav1->position + time);
 }
 
 
@@ -1769,7 +1767,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (timestamp == easyav1->timestamp.playback) {
+    if (timestamp == easyav1->position) {
         return EASYAV1_STATUS_OK;
     }
 
@@ -1778,9 +1776,13 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
     if (duration && timestamp >= easyav1_get_duration(easyav1)) {
         log(EASYAV1_LOG_LEVEL_INFO, "Requested timestamp is beyond the end of the stream.");
         timestamp = duration;
+
+        if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+            return EASYAV1_STATUS_OK;
+        }
     }
 
-    easyav1_timestamp original_timestamp = easyav1->timestamp.playback;
+    easyav1_timestamp original_timestamp = easyav1->position;
     easyav1_timestamp corrected_timestamp = get_closest_cue_point(easyav1, timestamp);
 
     unsigned int track = 0;
@@ -1807,10 +1809,10 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
     for (int pass = 0; pass < 2; pass++) {
 
-        easyav1->timestamp.playback = corrected_timestamp;
+        easyav1->position = corrected_timestamp;
 
         if (nestegg_track_seek(easyav1->webm.context, track, ms_to_internal_timestmap(easyav1, corrected_timestamp))) {
-            LOG_AND_SET_ERROR(EASYAV1_STATUS_IO_ERROR, "Failed to seek to requested timestamp %u.", easyav1->timestamp);
+            LOG_AND_SET_ERROR(EASYAV1_STATUS_IO_ERROR, "Failed to seek to requested timestamp %u.", easyav1->position);
             mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
             return EASYAV1_STATUS_ERROR;
         }
@@ -1855,30 +1857,32 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                 return EASYAV1_STATUS_ERROR;
             }
 
-            easyav1->timestamp.playback = packet->timestamp;
+            if (packet) {
+                easyav1->position = packet->timestamp;
 
-            if (pass == 1) {
-                if (packet->timestamp >= last_keyframe_timestamp) {
+                if (pass == 1) {
+                    if (packet->timestamp >= last_keyframe_timestamp) {
 
-                    // If fast seeking is enabled, we don't decode until we find the correct timestamp, rather we
-                    // resume playing immediately after we get to the last keyframe before the requested timestamp
-                    if (easyav1->settings.use_fast_seeking == EASYAV1_TRUE) {
-                        easyav1->seek = NOT_SEEKING;
-                        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
-                        cnd_signal(&easyav1->video.decoder_thread.has_packets);
+                        // If fast seeking is enabled, we don't decode until we find the correct timestamp, rather we
+                        // resume playing immediately after we get to the last keyframe before the requested timestamp
+                        if (easyav1->settings.use_fast_seeking == EASYAV1_TRUE) {
+                            easyav1->seek = NOT_SEEKING;
+                            mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+                            cnd_signal(&easyav1->video.decoder_thread.has_packets);
 
-                        break;
-                    } else if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
-                        easyav1->seek = SEEKING_FOR_TIMESTAMP;
-                        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
-                        cnd_signal(&easyav1->video.decoder_thread.has_packets);
+                            break;
+                        } else if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
+                            easyav1->seek = SEEKING_FOR_TIMESTAMP;
+                            mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+                            cnd_signal(&easyav1->video.decoder_thread.has_packets);
+                        }
+                    } else if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                        easyav1->seek = SEEKING_FOUND_KEYFRAME;
                     }
-                } else if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-                    easyav1->seek = SEEKING_FOUND_KEYFRAME;
                 }
             }
 
-            if (easyav1->timestamp.playback >= timestamp || easyav1->status == EASYAV1_STATUS_FINISHED) {
+            if (easyav1->position >= timestamp || easyav1->status == EASYAV1_STATUS_FINISHED) {
 
                 // If we couldn't find a keyframe on the first pass, we need to seek again,
                 // starting on the previous cue point
@@ -1935,9 +1939,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         }
     }
 
-    easyav1->status = EASYAV1_STATUS_OK;
-
-    log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->timestamp.playback,
+    log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->position,
         original_timestamp);
 
     return EASYAV1_STATUS_OK;
@@ -1950,7 +1952,7 @@ easyav1_status easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time)
         return EASYAV1_STATUS_ERROR;
     }
 
-    return easyav1_seek_to_timestamp(easyav1, easyav1->timestamp.playback + time);
+    return easyav1_seek_to_timestamp(easyav1, easyav1->position + time);
 }
 
 easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
@@ -1960,11 +1962,11 @@ easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (time > easyav1->timestamp.playback) {
-        time = easyav1->timestamp.playback;
+    if (time > easyav1->position) {
+        time = easyav1->position;
     }
 
-    return easyav1_seek_to_timestamp(easyav1, easyav1->timestamp.playback - time);
+    return easyav1_seek_to_timestamp(easyav1, easyav1->position - time);
 }
 
 
@@ -1982,12 +1984,12 @@ static queued_video_frame_t *retrieve_undisplayed_video_frame(easyav1_t *easyav1
         size_t index = (easyav1->video.frame_queue.begin + i) % VIDEO_FRAME_QUEUE_SIZE;
 
         if (easyav1->video.frame_queue.frames[index].displayed == EASYAV1_FALSE &&
-            easyav1->video.frame_queue.frames[index].pic.m.timestamp <= easyav1->timestamp.playback) {
+            easyav1->video.frame_queue.frames[index].pic.m.timestamp <= easyav1->position) {
             if (frame) {
                 frame_count++;
             }
             frame = &easyav1->video.frame_queue.frames[index];
-        } else if (easyav1->video.frame_queue.frames[index].pic.m.timestamp > easyav1->timestamp.playback) {
+        } else if (easyav1->video.frame_queue.frames[index].pic.m.timestamp > easyav1->position) {
             break;
         }
     }
@@ -2230,7 +2232,7 @@ easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1)
         return 0;
     }
 
-    return easyav1->timestamp.playback;
+    return easyav1->position;
 }
 
 easyav1_bool easyav1_has_video_track(const easyav1_t *easyav1)
@@ -2492,15 +2494,15 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
 
     if (must_seek == EASYAV1_TRUE &&
         easyav1->packets.started_fetching == EASYAV1_TRUE && easyav1_is_finished(easyav1) == EASYAV1_FALSE) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Settings changed, seeking to timestamp %llu.", easyav1->timestamp);
+        log(EASYAV1_LOG_LEVEL_INFO, "Settings changed, seeking to timestamp %llu.", easyav1->position);
 
         // Force slow seeking to keep the video at the current position
         easyav1_bool use_fast_seeking = easyav1->settings.use_fast_seeking;
         easyav1->settings.use_fast_seeking = EASYAV1_FALSE;
 
         // Change the timestamp to force seeking
-        easyav1->timestamp.playback++;
-        status = easyav1_seek_to_timestamp(easyav1, easyav1->timestamp.playback - 1);
+        easyav1->position++;
+        status = easyav1_seek_to_timestamp(easyav1, easyav1->position - 1);
 
         easyav1->settings.use_fast_seeking = use_fast_seeking;
     }

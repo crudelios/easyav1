@@ -332,6 +332,7 @@ static int init_easyav1(const char *filename)
     settings.enable_audio = !data.options.disable_audio;
     settings.enable_video = !data.options.disable_video;
     settings.use_fast_seeking = data.options.use_fast_seek;
+    settings.log_level = EASYAV1_LOG_LEVEL_INFO;
     if (data.options.log_level > 0) {
         if (data.options.log_level > 4) {
             data.options.log_level = 4;
@@ -549,7 +550,7 @@ static int easyav1_decode_thread(void *userdata)
         current_timestamp = SDL_GetTicks();
 
         // Pause the video
-        if (data.mouse.pressed || data.playback.paused) {
+        if (data.mouse.pressed || data.playback.paused || data.seek.mode != SEEK_NONE) {
             last_timestamp = current_timestamp;
         }
 
@@ -558,7 +559,7 @@ static int easyav1_decode_thread(void *userdata)
 
             SDL_LockMutex(data.SDL.thread.mutex.seek);
 
-            SDL_FlushAudioStream(data.SDL.audio_stream);
+            SDL_ClearAudioStream(data.SDL.audio_stream);
 
             easyav1_status seek_status = EASYAV1_STATUS_OK;
 
