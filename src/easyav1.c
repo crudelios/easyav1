@@ -484,9 +484,8 @@ static int video_decoder_thread(void *arg)
             packet = get_unencoded_video_packet(easyav1, &easyav1->packets.video_queue);
         }
 
-        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
-
         mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
 
         easyav1_status status = decode_video(easyav1, packet);
 
@@ -1529,7 +1528,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
         mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
 
         while (!packet->video_frame) {
-            log(EASYAV1_LOG_LEVEL_INFO, "Waiting for video frame to be decoded.");
+            log(EASYAV1_LOG_LEVEL_WARNING, "Waiting for video frame to be decoded.");
             cnd_wait(&easyav1->video.decoder_thread.has_frames, &easyav1->video.decoder_thread.mutexes.decoder);
         }
 
@@ -1739,15 +1738,22 @@ static void dequeue_all_video_frames(easyav1_t *easyav1);
 static void pause_video_decoder(easyav1_t *easyav1)
 {
     mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
+    mtx_lock(&easyav1->video.decoder_thread.mutexes.decoder);
 
     // Wait for the video decoder to finish processing pending frame
     if (get_unencoded_video_packet(easyav1, &easyav1->packets.video_queue) == NULL) {
+        mtx_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
         return;
     }
 
-    unsigned int pending_frames = easyav1->video.frame_queue.count;
+    mtx_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
 
-    while (easyav1->status != EASYAV1_STATUS_FINISHED && pending_frames == easyav1->video.frame_queue.count) {
+    unsigned int pending_frames = easyav1->video.frame_queue.count;
+    unsigned int queue_begin = easyav1->video.frame_queue.begin;
+
+    while (easyav1->status != EASYAV1_STATUS_FINISHED && pending_frames == easyav1->video.frame_queue.count &&
+        queue_begin == easyav1->video.frame_queue.begin) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Waiting for video decoder to finish processing pending frames.");
         cnd_wait(&easyav1->video.decoder_thread.has_frames, &easyav1->video.decoder_thread.mutexes.input);
     }
 }
@@ -1915,7 +1921,16 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
             // To do that, we need to keep the packet so it's fetched again and properly decoded.
             if (pass == 0 || (pass == 1 && (last_seek_mode != SEEKING_FOR_SQHDR || last_seek_mode == easyav1->seek ||
                 packet->timestamp < last_keyframe_timestamp))) {
+
+                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                    mtx_lock(&easyav1->video.decoder_thread.mutexes.input);
+                }
+
                 release_packet_from_queue(easyav1, packet);
+
+                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                    mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
+                }
             }
         }
     }
