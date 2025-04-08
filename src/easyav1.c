@@ -1513,6 +1513,8 @@ static easyav1_status send_packet_data_to_decoder(easyav1_t *easyav1, easyav1_pa
             return EASYAV1_STATUS_ERROR;
         }
     }
+
+    return EASYAV1_STATUS_OK;
 }
 
 static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
@@ -1860,7 +1862,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                         cnd_signal(&easyav1->video.decoder_thread.has_packets);
 
                         break;
-                    } else {
+                    } else if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
                         easyav1->seek = SEEKING_FOR_TIMESTAMP;
                         mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
                         cnd_signal(&easyav1->video.decoder_thread.has_packets);
@@ -1900,6 +1902,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                 if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
                     mtx_unlock(&easyav1->video.decoder_thread.mutexes.input);
                 }
+                log(EASYAV1_LOG_LEVEL_ERROR, "Failed to decode packet when seeking.");
                 return EASYAV1_STATUS_ERROR;
             }
 
