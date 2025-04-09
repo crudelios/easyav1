@@ -332,7 +332,6 @@ static int init_easyav1(const char *filename)
     settings.enable_audio = !data.options.disable_audio;
     settings.enable_video = !data.options.disable_video;
     settings.use_fast_seeking = data.options.use_fast_seek;
-    settings.log_level = EASYAV1_LOG_LEVEL_INFO;
     if (data.options.log_level > 0) {
         if (data.options.log_level > 4) {
             data.options.log_level = 4;
@@ -538,20 +537,14 @@ static int easyav1_decode_thread(void *userdata)
 
     SDL_LockMutex(data.SDL.thread.mutex.picture);
 
+    static easyav1_timestamp last_seek_time = 0;
+
     while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
 
         SDL_UnlockMutex(data.SDL.thread.mutex.picture);
 
         if (data.quit) {
             break;
-        }
-
-        last_timestamp = current_timestamp;
-        current_timestamp = SDL_GetTicks();
-
-        // Pause the video
-        if (data.mouse.pressed || data.playback.paused || data.seek.mode != SEEK_NONE) {
-            last_timestamp = current_timestamp;
         }
 
         // Handle seeking
@@ -561,48 +554,59 @@ static int easyav1_decode_thread(void *userdata)
 
             SDL_ClearAudioStream(data.SDL.audio_stream);
 
-            easyav1_status seek_status = EASYAV1_STATUS_OK;
+            easyav1_timestamp current_timestamp = easyav1_get_current_timestamp(data.easyav1);
 
-            switch (data.seek.mode) {
+            switch (data.seek.mode) {       
                 case SEEK_BACKWARD:
-                    seek_status = easyav1_seek_backward(data.easyav1, SKIP_TIME_MS);
+                    data.seek.timestamp = SKIP_TIME_MS >= current_timestamp ? 0 : current_timestamp - SKIP_TIME_MS;
                     break;
                 case SEEK_FORWARD:
-                    seek_status = easyav1_seek_forward(data.easyav1, SKIP_TIME_MS);
+                    data.seek.timestamp = current_timestamp + SKIP_TIME_MS;
                     break;
                 case SEEK_TO:
-                    seek_status = easyav1_seek_to_timestamp(data.easyav1, data.seek.timestamp);
+                    if (last_seek_time == data.seek.timestamp) {
+                        data.seek.mode = SEEK_NONE;
+                    }
                     break;
                 default:
+                    data.seek.mode = SEEK_NONE;
                     break;
             }
 
-            data.seek.mode = SEEK_NONE;
-            easyav1_timestamp seek_timestamp = data.seek.timestamp;
-            data.seek.timestamp = 0;
+            if (data.seek.mode != SEEK_NONE) {
 
-            if (seek_status != EASYAV1_STATUS_OK) {
-                printf("Failed to seek to timestamp %" PRIu64 "\n", seek_timestamp);
-                data.quit = 1;
+                data.seek.mode = SEEK_NONE;
 
-                SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+                if (easyav1_seek_to_timestamp(data.easyav1, data.seek.timestamp) != EASYAV1_STATUS_OK) {
+                    printf("Failed to seek to timestamp %" PRIu64 "\n", data.seek.timestamp);
+                    data.quit = 1;
 
-                break;
-            }
+                    SDL_UnlockMutex(data.SDL.thread.mutex.seek);
 
-            if (easyav1_has_video_track(data.easyav1)) {
-                while (easyav1_has_video_frame(data.easyav1) == EASYAV1_FALSE &&
-                    easyav1_is_finished(data.easyav1) == EASYAV1_FALSE) {
-                    easyav1_decode_next(data.easyav1);
+                    break;
                 }
+
+                last_seek_time = data.seek.timestamp;
+
             }
 
             SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+        } else {
+            last_seek_time = 0;
+
+            // Prevent busy waiting
+            if (current_timestamp == last_timestamp) {
+                SDL_Delay(1);
+            }
         }
 
-        // Prevent busy waiting
-        if (current_timestamp == last_timestamp) {
-            SDL_Delay(1);
+        // Update timestamp
+        last_timestamp = current_timestamp;
+        current_timestamp = SDL_GetTicks();
+
+        // Pause the video
+        if (data.mouse.pressed || data.playback.paused || last_seek_time != 0) {
+            last_timestamp = current_timestamp;
         }
 
         SDL_LockMutex(data.SDL.thread.mutex.picture);
