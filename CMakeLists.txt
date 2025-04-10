@@ -31,19 +31,13 @@ SET(NESTEGG_FILES
 	"ext/nestegg/nestegg.c"
 )
 
-SET(THREAD_FILES
-	"ext/tinycthread/tinycthread.c"
-)
-
-add_library(${PROJECT_NAME} ${HEADER_FILES} ${SOURCE_FILES} ${NESTEGG_FILES} ${THREAD_FILES})
+add_library(${PROJECT_NAME} ${HEADER_FILES} ${SOURCE_FILES} ${NESTEGG_FILES})
 target_include_directories(${PROJECT_NAME} PUBLIC
 	"src"
 	"ext"
 )
 
-find_package(Threads REQUIRED)
-
-target_link_libraries(${PROJECT_NAME} dav1d Threads::Threads)
+target_link_libraries(${PROJECT_NAME} dav1d)
 find_library(MATH_LIBRARY m)
 if(NOT APPLE AND MATH_LIBRARY)
     target_link_libraries(${PROJECT_NAME} ${MATH_LIBRARY})

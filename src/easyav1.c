@@ -6,7 +6,6 @@
 #include "nestegg/nestegg.h"
 #include "dav1d/dav1d.h"
 #include "minivorbis/minivorbis.h"
-#include "tinycthread/tinycthread.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +15,6 @@
 #define VIDEO_FRAME_QUEUE_SIZE 20
 
 #define VORBIS_HEADERS_COUNT 3
-
 #define DECODE_UNTIL_SKIP_MS 1000
 
 #define INVALID_TIMESTAMP ((easyav1_timestamp) -1)
@@ -906,12 +904,6 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
     easyav1->webm.video_tracks = 0;
     easyav1->webm.audio_tracks = 0;
 
-    easyav1_bool has_video_track = EASYAV1_FALSE;
-    easyav1_bool has_audio_track = EASYAV1_FALSE;
-
-    unsigned int video_track;
-    unsigned int audio_track;
-
     for (unsigned int track = 0; track < easyav1->webm.num_tracks; track++) {
 
         int type = nestegg_track_type(easyav1->webm.context, track);
@@ -936,8 +928,12 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
         if (type == NESTEGG_TRACK_VIDEO) {
 
             // Video already found or disabled - skip
-            if (easyav1->settings.enable_video == EASYAV1_FALSE || has_video_track == EASYAV1_TRUE ||
-                easyav1->webm.video_tracks != easyav1->settings.video_track) {
+            if (easyav1->settings.enable_video == EASYAV1_FALSE || easyav1->video.active == EASYAV1_TRUE) {
+                easyav1->webm.video_tracks++;
+                continue;
+            }
+
+            if (easyav1->webm.video_tracks != easyav1->settings.video_track) {
                 easyav1->webm.video_tracks++;
                 continue;
             }
@@ -948,20 +944,24 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
             easyav1->webm.video_tracks++;
 
             if (codec != NESTEGG_CODEC_AV1) {
-                log(EASYAV1_LOG_LEVEL_WARNING,
-                    "Unsupported video codec found. Only AV1 codec is supported. Not displaying video.");
+                log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported video codec found. Only AV1 codec is supported. Not displaying video.");
                 continue;
             }
 
-            has_video_track = EASYAV1_TRUE;
-            video_track = track;
+            if (init_video(easyav1, track) == EASYAV1_STATUS_ERROR) {
+                return EASYAV1_STATUS_ERROR;
+            }
         }
 
         if (type == NESTEGG_TRACK_AUDIO) {
 
             // Audio already found or disabled - skip
-            if (easyav1->settings.enable_audio == EASYAV1_FALSE || has_audio_track == EASYAV1_TRUE ||
-                easyav1->webm.audio_tracks != easyav1->settings.audio_track) {
+            if (easyav1->settings.enable_audio == EASYAV1_FALSE || easyav1->audio.active == EASYAV1_TRUE) {
+                easyav1->webm.audio_tracks++;
+                continue;
+            }
+
+            if (easyav1->webm.audio_tracks != easyav1->settings.audio_track) {
                 easyav1->webm.audio_tracks++;
                 continue;
             }
@@ -972,25 +972,13 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1)
             easyav1->webm.audio_tracks++;
 
             if (codec != NESTEGG_CODEC_VORBIS) {
-                log(EASYAV1_LOG_LEVEL_WARNING,
-                    "Unsupported audio codec found. Only vorbis codec is supported. Not playing audio.");
+                log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported audio codec found. Only vorbis codec is supported. Not playing audio.");
                 continue;
             }
 
-            has_audio_track = EASYAV1_TRUE;
-            audio_track = track;
-        }
-    }
-
-    if (has_video_track == EASYAV1_TRUE) {
-        if (init_video(easyav1, video_track) == EASYAV1_STATUS_ERROR) {
-            return EASYAV1_STATUS_ERROR;
-        }
-    }
-
-    if (has_audio_track == EASYAV1_TRUE) {
-        if (init_audio(easyav1, audio_track) == EASYAV1_STATUS_ERROR) {
-            return EASYAV1_STATUS_ERROR;
+            if (init_audio(easyav1, track) == EASYAV1_STATUS_ERROR) {
+                return EASYAV1_STATUS_ERROR;
+            }
         }
     }
 
@@ -1646,8 +1634,7 @@ static easyav1_status sync_packet_queues(easyav1_t *easyav1)
     // First we check which packet types are decoded earlier than the video timeline
     // As an example, let's assume audio.offset is -100ms. This means we must fetch audio packets up to 100ms later
     // than the video packets. This is because audio packets are decoded earlier than video packets.
-    easyav1_packet_type early_packet_type = easyav1->audio.active == EASYAV1_TRUE && easyav1->packets.audio_offset < 0 ?
-        PACKET_TYPE_AUDIO : PACKET_TYPE_VIDEO;
+    easyav1_packet_type early_packet_type = easyav1->packets.audio_offset < 0 ? PACKET_TYPE_AUDIO : PACKET_TYPE_VIDEO;
 
     easyav1_packet_queue *early_queue = early_packet_type == PACKET_TYPE_VIDEO ?
         &easyav1->packets.video_queue : &easyav1->packets.audio_queue;
@@ -1663,10 +1650,6 @@ static easyav1_status sync_packet_queues(easyav1_t *easyav1)
 
     easyav1_timestamp abs_audio_offset = easyav1->packets.audio_offset < 0 ?
         -easyav1->packets.audio_offset : easyav1->packets.audio_offset;
-
-    if (easyav1->audio.active == EASYAV1_FALSE) {
-        abs_audio_offset = 0;
-    }
 
     // Keeping with the example, we need to keep fetching audio packets until we reach an audio packet that is at least
     // 100ms after the video packet.
