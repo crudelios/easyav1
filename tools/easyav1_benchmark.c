@@ -73,9 +73,8 @@ int main(int argc, const char **argv)
 {
     const char *filename = NULL;
     if (argc < 2) {
-        filename = "../../data/helios1.webm";
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
-      //  return 1;
+        return 1;
     } else {
         filename = argv[1];
     }

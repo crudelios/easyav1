@@ -324,7 +324,6 @@ static void close_file_stream(void)
 
 static int init_easyav1(const char *filename)
 {
-    data.options.loop = 1;
     easyav1_settings settings = easyav1_default_settings();
     settings.callbacks.audio = audio_callback;
     settings.audio_offset_time = -22050 / 2048 + data.options.audio_offset;
