@@ -324,6 +324,7 @@ static void close_file_stream(void)
 
 static int init_easyav1(const char *filename)
 {
+    data.options.loop = 1;
     easyav1_settings settings = easyav1_default_settings();
     settings.callbacks.audio = audio_callback;
     settings.audio_offset_time = -22050 / 2048 + data.options.audio_offset;
@@ -547,6 +548,8 @@ static int easyav1_decode_thread(void *userdata)
             break;
         }
 
+        int did_seek = 0;
+
         // Handle seeking
         if (data.seek.mode != SEEK_NONE) {
 
@@ -554,18 +557,30 @@ static int easyav1_decode_thread(void *userdata)
 
             SDL_ClearAudioStream(data.SDL.audio_stream);
 
-            easyav1_timestamp current_timestamp = easyav1_get_current_timestamp(data.easyav1);
+            easyav1_timestamp timestamp = easyav1_get_current_timestamp(data.easyav1);
+
+            int should_seek = 1;
 
             switch (data.seek.mode) {       
                 case SEEK_BACKWARD:
-                    data.seek.timestamp = SKIP_TIME_MS >= current_timestamp ? 0 : current_timestamp - SKIP_TIME_MS;
+                    data.seek.timestamp = SKIP_TIME_MS >= timestamp ? 0 : timestamp - SKIP_TIME_MS;
                     break;
                 case SEEK_FORWARD:
-                    data.seek.timestamp = current_timestamp + SKIP_TIME_MS;
+                    data.seek.timestamp = timestamp + SKIP_TIME_MS;
                     break;
                 case SEEK_TO:
                     if (last_seek_time == data.seek.timestamp) {
-                        data.seek.mode = SEEK_NONE;
+                        easyav1_timestamp difference = 0;
+                        
+                        if (data.seek.timestamp > timestamp) {
+                            difference = data.seek.timestamp - timestamp;
+                        } else {
+                            difference = timestamp - data.seek.timestamp;
+                        }
+
+                        if (difference < 200) {
+                            should_seek = 0;
+                        }
                     }
                     break;
                 default:
@@ -573,9 +588,9 @@ static int easyav1_decode_thread(void *userdata)
                     break;
             }
 
-            if (data.seek.mode != SEEK_NONE) {
+            data.seek.mode = SEEK_NONE;
 
-                data.seek.mode = SEEK_NONE;
+            if (should_seek) {
 
                 if (easyav1_seek_to_timestamp(data.easyav1, data.seek.timestamp) != EASYAV1_STATUS_OK) {
                     printf("Failed to seek to timestamp %" PRIu64 "\n", data.seek.timestamp);
@@ -588,12 +603,12 @@ static int easyav1_decode_thread(void *userdata)
 
                 last_seek_time = data.seek.timestamp;
 
+                did_seek = 1;
+
             }
 
             SDL_UnlockMutex(data.SDL.thread.mutex.seek);
         } else {
-            last_seek_time = 0;
-
             // Prevent busy waiting
             if (current_timestamp == last_timestamp) {
                 SDL_Delay(1);
@@ -605,7 +620,7 @@ static int easyav1_decode_thread(void *userdata)
         current_timestamp = SDL_GetTicks();
 
         // Pause the video
-        if (data.mouse.pressed || data.playback.paused || last_seek_time != 0) {
+        if (data.mouse.pressed || data.playback.paused || did_seek) {
             last_timestamp = current_timestamp;
         }
 
