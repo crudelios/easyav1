@@ -408,7 +408,9 @@ static void log_from_dav1d(void *userdata, const char *format, va_list args)
     } \
 
 
-/*
+#ifdef _WIN32
+
+ /*
  * Threading functions
  */
 
@@ -578,6 +580,8 @@ static inline int pthread_cond_signal(pthread_cond_t *const cond)
     WakeConditionVariable(cond);
     return 0;
 }
+
+#endif // _WIN32
 
 
 /*
