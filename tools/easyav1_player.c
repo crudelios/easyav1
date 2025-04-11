@@ -560,7 +560,7 @@ static int easyav1_decode_thread(void *userdata)
 
             int should_seek = 1;
 
-            switch (data.seek.mode) {       
+            switch (data.seek.mode) {
                 case SEEK_BACKWARD:
                     data.seek.timestamp = SKIP_TIME_MS >= timestamp ? 0 : timestamp - SKIP_TIME_MS;
                     break;
@@ -607,6 +607,7 @@ static int easyav1_decode_thread(void *userdata)
             }
 
             SDL_UnlockMutex(data.SDL.thread.mutex.seek);
+
         } else {
             // Prevent busy waiting
             if (current_timestamp == last_timestamp) {

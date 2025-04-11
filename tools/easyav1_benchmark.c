@@ -71,19 +71,16 @@ void benchmark_clock_reset_timer(benchmark_clock *clock)
 
 int main(int argc, const char **argv)
 {
-    const char *filename = NULL;
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
-    } else {
-        filename = argv[1];
     }
 
     easyav1_settings settings = easyav1_default_settings();
     settings.enable_audio = 0;
     settings.skip_unprocessed_frames = 0;
 
-    easyav1_t *easyav1 = easyav1_init_from_filename(filename, &settings);
+    easyav1_t *easyav1 = easyav1_init_from_filename(argv[1], &settings);
 
     if (!easyav1) {
         printf("Failed to initialize easyav1.\n");
@@ -96,6 +93,9 @@ int main(int argc, const char **argv)
         return 3;
     }
 
+    printf("Video duration: %" PRIu64 ":%02" PRIu64 " (%" PRIu64 " ms).\n",
+        easyav1_get_duration(easyav1) / 60000, (easyav1_get_duration(easyav1) / 1000) % 60,
+        easyav1_get_duration(easyav1));
     printf("Video size: %ux%u, %u FPS.\n", easyav1_get_video_width(easyav1), easyav1_get_video_height(easyav1),
         easyav1_get_video_fps(easyav1));
     fflush(stdout);
