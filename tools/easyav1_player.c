@@ -539,13 +539,9 @@ static int easyav1_decode_thread(void *userdata)
 
     static easyav1_timestamp last_seek_time = 0;
 
-    while (easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
+    while (!data.quit && easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
 
         SDL_UnlockMutex(data.SDL.thread.mutex.picture);
-
-        if (data.quit) {
-            break;
-        }
 
         int did_seek = 0;
 
