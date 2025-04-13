@@ -14,7 +14,7 @@
 #include <windows.h>
 #include <process.h>
 
-/*
+/**
  * Windows-specific thread handling.
  *
  * This code is based on the pthreads implementation in the dav1d project.
@@ -48,7 +48,7 @@ typedef CONDITION_VARIABLE pthread_cond_t;
 #define EASYAV1_STATUS_IS_ERROR(status) ((status) <= EASYAV1_STATUS_ERROR)
 
 
-/*
+/**
  * Stream types - used to determine how to read the data
  */
 typedef enum {
@@ -58,7 +58,7 @@ typedef enum {
 } stream_type;
 
 
-/*
+/**
  * Seeking mode - used to determine the current seeking state
  */
 typedef enum {
@@ -70,7 +70,7 @@ typedef enum {
 } seeking_mode;
 
 
-/*
+/**
  * Packet type - whether the packet is video or audio
  */
 typedef enum {
@@ -79,7 +79,7 @@ typedef enum {
 } easyav1_packet_type;
 
 
-/*
+/**
  * Packet data structure - used to store the webm packet data and metadata
  */
 typedef struct {
@@ -91,7 +91,7 @@ typedef struct {
 } easyav1_packet;
 
 
-/*
+/**
  * Packet queue - used to store the packets in a queue, to be processed later
  */
 typedef struct {
@@ -102,7 +102,7 @@ typedef struct {
 } easyav1_packet_queue;
 
 
-/*
+/**
  * Video frame data structure - used to store the video frame data and metadata
  */
 typedef struct {
@@ -111,12 +111,12 @@ typedef struct {
 } queued_video_frame_t;
 
 
-/*
+/**
  * The main easyav1 structure - used to store all the data and metadata for the easyav1 library
  */
 struct easyav1_t {
 
-    /*
+    /**
      * The WebM context - used to store the webm context and metadata
      */
     struct {
@@ -127,7 +127,7 @@ struct easyav1_t {
     } webm;
 
 
-    /*
+    /**
      * The video decoder context - used to store the video decoder context and metadata
      */
     struct {
@@ -145,7 +145,7 @@ struct easyav1_t {
         uint64_t processed_frames; // The number of frames processed by the decoder
 
 
-        /*
+        /**
          * The video frame queue - used to store the video frames in a queue, to be processed later
          */
         struct {
@@ -157,12 +157,12 @@ struct easyav1_t {
 
         easyav1_video_frame frame; // The current video frame data and metadata
 
-        /*
+        /**
          * The video decoder thread - used to store the video decoder thread data and metadata
          */
         struct {
 
-            /*
+            /**
              * Structure holding the video decoder thread mutexts
              */
             struct {
@@ -171,7 +171,7 @@ struct easyav1_t {
                 pthread_mutex_t output;  // The queue mutex for the decoder thread - used to lock the video frame display queue
             } mutexes;
 
-            /*
+            /**
              * Structure holding the video decoder thread condition variables
              */
             struct {
@@ -187,12 +187,12 @@ struct easyav1_t {
     } video;
 
 
-    /*
+    /**
      * The audio decoder context - used to store the audio decoder context and metadata
      */
     struct {
 
-        /*
+        /**
          * Vorbis decoder data
          */
         struct {
@@ -215,7 +215,7 @@ struct easyav1_t {
     } audio;
 
 
-    /*
+    /**
      * The packet queues - used to store the video and audio packets separate queues, to be processed later
      */
     struct {
@@ -231,7 +231,7 @@ struct easyav1_t {
     } packets;
 
 
-    /*
+    /**
      * The stream data - used to store the stream data and metadata
      */
     struct {
@@ -252,7 +252,7 @@ struct easyav1_t {
 };
 
 
-/*
+/**
  * Memory buffer data structure - used to navigate memory buffers
  */
 typedef struct {
@@ -262,7 +262,7 @@ typedef struct {
 } easyav1_memory;
 
 
-/*
+/**
  * Default settings for the easyav1 library - used to set the default values for the easyav1 settings
  */
 static const easyav1_settings DEFAULT_SETTINGS = {
@@ -283,37 +283,54 @@ static const easyav1_settings DEFAULT_SETTINGS = {
     .log_level = EASYAV1_LOG_LEVEL_WARNING
 };
 
-/*
+/**
  * Decoder function type - used to define the decoder function signature
  */
 typedef easyav1_status(*decoder_function)(easyav1_t *, easyav1_packet *, uint8_t *, size_t);
 
 
-/*
+/**
  * Utility functions
  */
-static inline easyav1_timestamp internal_timestamp_to_ms(const easyav1_t *easyav1, easyav1_timestamp ns)
+
+/**
+  * @brief Converts a timestamp from the internal timestamp format to milliseconds.
+  *
+  * @param easyav1 The easyav1 context.
+  * @param ns The timestamp in the internal format.
+  *
+  * @return The timestamp in milliseconds.
+  */
+static inline easyav1_timestamp internal_timestamp_to_ms(const easyav1_t *easyav1, easyav1_timestamp internal_ts)
 {
-    return ns / easyav1->time_scale;
+    return internal_ts / easyav1->time_scale;
 }
 
+/**
+  * @brief Converts a timestamp from milliseconds to the internal timestamp format.
+  *
+  * @param easyav1 The easyav1 context.
+  * @param ms The timestamp in milliseconds.
+  *
+  * @return The timestamp in the internal format.
+  */
 static inline easyav1_timestamp ms_to_internal_timestmap(const easyav1_t *easyav1, easyav1_timestamp ms)
 {
     return ms * easyav1->time_scale;
 }
 
 
-/*
+/**
  * Logging functions
  */
 
-/*
+ /**
  * Logs a message to the console with the given log level, line number, function name, and format string.
  * The log level is used to determine the severity of the message, and the format string is used to format the message.
  *
  * @param level The log level of the message.
  *
- * @param ... The rest of the params are the same as printf.
+ * @param ... The rest of the params are the same as `printf`.
  */
 #define log(level, ...) \
 if ((!easyav1 && DEFAULT_SETTINGS.log_level >= level) || (easyav1 && easyav1->settings.log_level >= level)) { \
@@ -321,7 +338,7 @@ if ((!easyav1 && DEFAULT_SETTINGS.log_level >= level) || (easyav1 && easyav1->se
 }
 
 
-/*
+ /**
  * Logs a message to the console with the given log level, line number, function name, and format string.
  *
  * @param level The log level of the message.
@@ -329,7 +346,7 @@ if ((!easyav1 && DEFAULT_SETTINGS.log_level >= level) || (easyav1 && easyav1->se
  * @param func_name The function name of the message.
  * @param format The format string of the message.
  *
- * @param ... The rest of the params are the same as printf.
+ * @param ... The rest of the params are the same as `printf`.
  */
 static void log_internal(easyav1_log_level_t level, unsigned int line, const char *func_name, const char *format, ...)
 {
@@ -350,8 +367,8 @@ static void log_internal(easyav1_log_level_t level, unsigned int line, const cha
 }
 
 
-/*
- * Log function that is called from nestegg webm decoder
+/**
+ * Log function that is called from nestegg webm decoder.
  */
 static void log_from_nestegg(nestegg *ne, unsigned int severity, const char *format, ...)
 {
@@ -378,8 +395,8 @@ static void log_from_nestegg(nestegg *ne, unsigned int severity, const char *for
 }
 
 
-/*
- * Log function that is called from dav1d AV1 decoder
+/**
+ * Log function that is called from dav1d AV1 decoder.
  */
 static void log_from_dav1d(void *userdata, const char *format, va_list args)
 {
@@ -393,7 +410,7 @@ static void log_from_dav1d(void *userdata, const char *format, va_list args)
 }
 
 
-/*
+/**
  * Prints a log message and sets the encoder to an error state
  *
  * @param error_type The error type to set the encoder to.
@@ -410,11 +427,11 @@ static void log_from_dav1d(void *userdata, const char *format, va_list args)
 
 #ifdef _WIN32
 
- /*
- * Threading functions
+/**
+ * Threading functions - pthread compatibility layer for Windows
  */
 
-/*
+/**
  * @brief Thread entry point function - used to start the thread and call the thread function
  *
  * @param data The thread data to pass to the thread function.
@@ -428,7 +445,7 @@ static unsigned __stdcall thread_entrypoint(void *const data)
     return 0;
 }
 
-/*
+/**
  * @brief Creates a new thread and starts it with the given function and argument.
  *
  * @param thread The thread to create.
@@ -447,7 +464,7 @@ static int pthread_create(pthread_t *const thread, const pthread_attr_t *const a
     return thread->h == NULL;
 }
 
-/*
+/**
  * @brief Joins the thread and waits for it to finish.
  *
  * @param thread The thread to join.
@@ -468,7 +485,7 @@ static int pthread_join(pthread_t *const thread, void **const res)
     return CloseHandle(thread->h) == 0;
 }
 
-/*
+/**
  * @brief Joins the thread and waits for it to finish. This is a macro that wraps the pthread_join function.
  *
  * @param thread The thread to join.
@@ -478,7 +495,7 @@ static int pthread_join(pthread_t *const thread, void **const res)
  */
 #define pthread_join(thread, res) pthread_join(&(thread), res)
 
-/*
+/**
  * @brief Initializes a mutex variable.
  *
  * @param mutex The mutex to initialize.
@@ -492,7 +509,7 @@ static inline int pthread_mutex_init(pthread_mutex_t *const mutex, const void *c
     return 0;
 }
 
-/*
+/**
  * @brief Destroys a mutex variable.
  *
  * @param mutex The mutex to destroy.
@@ -504,7 +521,7 @@ static inline int pthread_mutex_destroy(pthread_mutex_t *const mutex)
     return 0;
 }
 
-/*
+/**
  * @brief Locks a mutex variable.
  *
  * @param mutex The mutex to lock.
@@ -517,7 +534,7 @@ static inline int pthread_mutex_lock(pthread_mutex_t *const mutex)
     return 0;
 }
 
-/*
+/**
  * @brief Unlocks a mutex variable.
  *
  * @param mutex The mutex to unlock.
@@ -530,7 +547,7 @@ static inline int pthread_mutex_unlock(pthread_mutex_t *const mutex)
     return 0;
 }
 
-/*
+/**
  * @brief Initializes a condition variable.
  *
  * @param cond The condition variable to initialize.
@@ -544,7 +561,7 @@ static inline int pthread_cond_init(pthread_cond_t *const cond, const void *cons
     return 0;
 }
 
-/*
+/**
  * @brief Destroys a condition variable.
  *
  * @param cond The condition variable to destroy.
@@ -556,7 +573,7 @@ static inline int pthread_cond_destroy(pthread_cond_t *const cond)
     return 0;
 }
 
-/*
+/**
  * @brief Waits for a condition to be signal.
  *
  * @param cond The condition variable to wait on.
@@ -568,7 +585,7 @@ static inline int pthread_cond_wait(pthread_cond_t *const cond, pthread_mutex_t 
     return SleepConditionVariableSRW(cond, mutex, INFINITE, 0) == 0;
 }
 
-/*
+/**
  * @brief Signals a condition variable.
  *
  * @param cond The condition variable to signal.
@@ -584,11 +601,11 @@ static inline int pthread_cond_signal(pthread_cond_t *const cond)
 #endif // _WIN32
 
 
-/*
+/**
  * I/O functions
  */
 
-/*
+/**
  * File read function - used to read data from a file
  *
  * @param buf The buffer to read the data into.
@@ -611,7 +628,7 @@ static int file_read(void *buf, size_t size, void *userdata)
 }
 
 
-/*
+/**
  * File seek function - used to seek to a specific position in a file
  *
  * @param offset The offset to seek to.
@@ -634,7 +651,7 @@ static int file_seek(int64_t offset, int origin, void *userdata)
 }
 
 
-/*
+/**
  * File tell function - used to get the current position in a file
  *
  * @param userdata The user data to pass to the tell function.
@@ -655,7 +672,7 @@ static int64_t file_tell(void *userdata)
 }
 
 
-/*
+/**
  * Memory read function - used to read data from a memory buffer
  *
  * @param buf The buffer to read the data into.
@@ -685,7 +702,7 @@ static int memory_read(void *buf, size_t size, void *userdata)
 }
 
 
-/*
+/**
  * Memory seek function - used to seek to a specific position in a memory buffer
  *
  * @param offset The offset to seek to.
@@ -714,7 +731,7 @@ static int memory_seek(int64_t offset, int origin, void *userdata)
 }
 
 
-/*
+/**
  * Memory tell function - used to get the current position in a memory buffer
  *
  * @param userdata The user data to pass to the tell function.
@@ -735,7 +752,7 @@ static int64_t memory_tell(void *userdata)
  * EasyAV1 decoder functions
  *********************************************************************************/
 
-/*
+/**
  * @brief Initializes the requested video and audio tracks.
  *
  * @param easyav1 The easyav1 context to initialize the tracks for.
@@ -744,7 +761,7 @@ static int64_t memory_tell(void *userdata)
  */
 static easyav1_status init_webm_tracks(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Initializes the requested video track.
  *
  * @param easyav1 The easyav1 context to initialize the video track for.
@@ -754,7 +771,7 @@ static easyav1_status init_webm_tracks(easyav1_t *easyav1);
  */
 static easyav1_status init_video(easyav1_t *easyav1, unsigned int track);
 
-/*
+/**
  * @brief Initializes the requested audio track.
  *
  * @param easyav1 The easyav1 context to initialize the audio track for.
@@ -764,7 +781,7 @@ static easyav1_status init_video(easyav1_t *easyav1, unsigned int track);
  */
 static easyav1_status init_audio(easyav1_t *easyav1, unsigned int track);
 
-/*
+/**
  * @brief Initializes the video decoder thread.
  *
  * @param easyav1 The easyav1 context to initialize the video decoder thread for.
@@ -773,7 +790,7 @@ static easyav1_status init_audio(easyav1_t *easyav1, unsigned int track);
  */
 static easyav1_status init_video_decoder_thread(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Sets up memory for the audio buffer, taking into account the number of channels and interlacing.
  *
  * @param easyav1 The easyav1 context to prepare the audio buffer for.
@@ -782,7 +799,7 @@ static easyav1_status init_video_decoder_thread(easyav1_t *easyav1);
  */
 static easyav1_status prepare_audio_buffer(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Increases the memory capacity of the packet queue to accommodate more packets.
  *
  * @param easyav1 The easyav1 context to increase the packet queue capacity for.
@@ -792,7 +809,7 @@ static easyav1_status prepare_audio_buffer(easyav1_t *easyav1);
  */
 static easyav1_status increase_packet_queue_capacity(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Provides a new queue slot for a packet.
  *
  * @param easyav1 The easyav1 context to create the packet for.
@@ -802,7 +819,7 @@ static easyav1_status increase_packet_queue_capacity(easyav1_t *easyav1, easyav1
  */
 static easyav1_packet *queue_new_packet(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Gets the oldest video packet in the queue that hasn't been decoded yet.
  *
  * The packet is not removed from the queue.
@@ -814,7 +831,7 @@ static easyav1_packet *queue_new_packet(easyav1_t *easyav1, easyav1_packet_queue
  */
 static easyav1_packet *get_undecoded_video_packet(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Gets the oldest packet from the queue.
  *
  * The packet is not removed from the queue.
@@ -826,7 +843,7 @@ static easyav1_packet *get_undecoded_video_packet(easyav1_t *easyav1, easyav1_pa
  */
 static easyav1_packet *retrieve_first_packet_from_queue(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Gets the most recent packet from the queue.
  *
  * The packet is not removed from the queue.
@@ -838,7 +855,7 @@ static easyav1_packet *retrieve_first_packet_from_queue(easyav1_t *easyav1, easy
  */
 static easyav1_packet *retrieve_last_packet_from_queue(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Removes the oldest packet from the queue.
  *
  * @param easyav1 The easyav1 context to remove the packet from.
@@ -846,7 +863,7 @@ static easyav1_packet *retrieve_last_packet_from_queue(easyav1_t *easyav1, easya
  */
 static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet);
 
-/*
+/**
  * @brief Removes all packets from the queue.
  *
  * @param easyav1 The easyav1 context to remove the packets from.
@@ -854,7 +871,7 @@ static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet
  */
 static void release_packets_from_queue(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Destroys the packet queue and frees the memory used by it.
  *
  * @param easyav1 The easyav1 context to destroy the packet queue for.
@@ -862,7 +879,7 @@ static void release_packets_from_queue(easyav1_t *easyav1, easyav1_packet_queue 
  */
 static void destroy_packet_queue(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
-/*
+/**
  * @brief Fetches a new WebM packet, allocates memory for it, sets its properties and adds it to the respective queue.
  *
  * @param easyav1 The easyav1 context to fetch the packet for.
@@ -871,7 +888,7 @@ static void destroy_packet_queue(easyav1_t *easyav1, easyav1_packet_queue *queue
  */
 static easyav1_packet *prepare_new_packet(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Syncs the video and audio packets, feeding the video packet queue for the decoder thread and fetching audio packets
  * to respect the `audio_offset_time` setting.
  *
@@ -882,7 +899,7 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1);
  */
 static easyav1_status sync_packet_queues(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Gets the next packet from the video or audio queue, depending on the timestamp of the packet.
  *
  * @param easyav1 The easyav1 context to get the packet from.
@@ -891,7 +908,7 @@ static easyav1_status sync_packet_queues(easyav1_t *easyav1);
  */
 static easyav1_packet *get_next_packet(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Adds a decoded video frame to the queue for display.
  *
  * If the queue is full, the oldest decoded frame is removed.
@@ -902,7 +919,7 @@ static easyav1_packet *get_next_packet(easyav1_t *easyav1);
  */
 static queued_video_frame_t *enqueue_video_frame(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Grabs the most recent video frame from the queue that hasn't been displayed yet.
  *
  * The frame is not removed from the queue.
@@ -914,42 +931,42 @@ static queued_video_frame_t *enqueue_video_frame(easyav1_t *easyav1);
  */
 static queued_video_frame_t *retrieve_undisplayed_video_frame_from_queue(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Removes a video frame from the queue.
  *
  * @param easyav1 The easyav1 context to remove the video frame from.
  */
 static void dequeue_video_frame(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Removes all video frames that have been displayed from the queue.
  *
  * @param easyav1 The easyav1 context to remove the video frames from.
  */
 static void dequeue_used_video_frames(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Removes all video frames from the queue.
  *
  * @param easyav1 The easyav1 context to remove the video frames from.
  */
 static void dequeue_all_video_frames(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Calls the video callback function with the decoded video frame data.
  *
  * @param easyav1 The easyav1 context to call the video callback for.
  */
 static void callback_video(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Calls the audio callback function with the decoded audio frame data.
  *
  * @param easyav1 The easyav1 context to call the audio callback for.
  */
 static void callback_audio(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Video decoder thread function.
  *
  * Processes all video packets in the queue and decodes them.
@@ -961,7 +978,7 @@ static void callback_audio(easyav1_t *easyav1);
  */
 static void *video_decoder_thread(void *arg);
 
-/*
+/**
  * @brief Pauses the video decoder thread.
  *
  * This is just a convenience function that locks both the `input` and `decoder` mutexes in a way that guarantees that
@@ -973,7 +990,7 @@ static void *video_decoder_thread(void *arg);
  */
 static void pause_video_decoder(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Callback function that seeks for a sequence header.
  *
  * This function is only called when the decoder is seeking for a sequence header and it runs from the main thread.
@@ -988,7 +1005,7 @@ static void pause_video_decoder(easyav1_t *easyav1);
  */
 static easyav1_status seek_sequence_header(easyav1_t *easyav1, easyav1_packet *packet, uint8_t *data, size_t size);
 
-/*
+/**
  * @brief Video decoder function.
  *
  * Decodes the video packet data and adds it to the video frame queue.
@@ -1001,7 +1018,7 @@ static easyav1_status seek_sequence_header(easyav1_t *easyav1, easyav1_packet *p
  */
 static easyav1_status decode_video(easyav1_t *easyav1, easyav1_packet *packet);
 
-/*
+/**
  * @brief Audio decoder function.
  *
  * Decodes the audio packet data and adds it to audio buffer.
@@ -1015,7 +1032,7 @@ static easyav1_status decode_video(easyav1_t *easyav1, easyav1_packet *packet);
  */
 static easyav1_status decode_audio(easyav1_t *easyav1, easyav1_packet *packet, uint8_t *data, size_t size);
 
-/*
+/**
  * @brief Prepares the audio to store the new decoded samples.
  *
  * If the amount of decoded samples is larger than the free buffer space, existing samples are "shifted left" in the
@@ -1028,7 +1045,7 @@ static easyav1_status decode_audio(easyav1_t *easyav1, easyav1_packet *packet, u
  */
 static unsigned int prepare_audio_buffer_for_new_samples(easyav1_t *easyav1, int decoded_samples);
 
-/*
+/**
  * @brief Sends the packet data to the decoder function.
  *
  * This function gets the actual data from the WebM container and decodes it.
@@ -1041,7 +1058,7 @@ static unsigned int prepare_audio_buffer_for_new_samples(easyav1_t *easyav1, int
  */
 static easyav1_status send_packet_data_to_decoder(easyav1_t *easyav1, easyav1_packet *packet, decoder_function decode);
 
-/*
+/**
  * @brief Requests the decoding of a single packet.
  *
  * For audio packets, the packet data is passed to the vorbis decoder and decoded immediately.
@@ -1056,7 +1073,7 @@ static easyav1_status send_packet_data_to_decoder(easyav1_t *easyav1, easyav1_pa
  */
 static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet);
 
-/*
+/**
  * @brief Gets the closest cue point before the given timestamp.
  *
  * @param easyav1 The easyav1 context to get the cue point for.
@@ -1066,7 +1083,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet);
  */
 static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1_timestamp timestamp);
 
-/*
+/**
  * @brief Changes the current video or audio track to the given track ID.
  *
  * @param easyav1 The easyav1 context to change the track for.
@@ -1077,14 +1094,14 @@ static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1
  */
 static easyav1_status change_track(easyav1_t *easyav1, easyav1_packet_type type, unsigned int track_id);
 
-/*
+/**
  * @brief Destroys the video decoder context and thread and frees the memory used by it.
  *
  * @param easyav1 The easyav1 context to destroy the video decoder for.
  */
 static void destroy_video(easyav1_t *easyav1);
 
-/*
+/**
  * @brief Destroys the audio decoder context and frees the memory used by it.
  *
  * @param easyav1 The easyav1 context to destroy the audio decoder for.
@@ -1092,7 +1109,7 @@ static void destroy_video(easyav1_t *easyav1);
 static void destroy_audio(easyav1_t *easyav1);
 
 
-/*
+/**
  * Initialization functions
  */
 
@@ -1561,7 +1578,7 @@ easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settin
 }
 
 
-/*
+/**
  * WebM packet handling functions
  */
 
@@ -1811,8 +1828,8 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
     return new_packet;
 }
 
-/*
- * Indicates whether we need to fetch more video packets.
+/**
+ * @brief Indicates whether we need to fetch more video packets.
  * 
  * @param easyav1 The easyav1 context to check.
  *
@@ -1937,7 +1954,7 @@ static easyav1_packet *get_next_packet(easyav1_t *easyav1)
 }
 
 
-/*
+/**
  * Video frame queue functions
  */
 
@@ -2024,7 +2041,7 @@ static void dequeue_all_video_frames(easyav1_t *easyav1)
 }
 
 
-/*
+/**
  * Decoding functions
  */
 
@@ -2122,7 +2139,7 @@ static easyav1_status seek_sequence_header(easyav1_t *easyav1, easyav1_packet *p
     return EASYAV1_STATUS_OK;
 }
 
-/*
+/**
  * Dummy function that is passed to the AV1 decoder to free the data buffer.
  * This is a no-op function that does nothing.
  */
@@ -2340,7 +2357,6 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
     // Decoding video: use multithreaded decoder
     if (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP) {
 
-
         if (!packet->video_frame) {
 
             pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.decoder);
@@ -2524,7 +2540,7 @@ easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
 }
 
 
-/*
+/**
  * Seeking functions
  */
 
@@ -2597,7 +2613,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         track = easyav1->audio.track;
     }
 
-    /*
+    /**
      * Two-pass seek when there's video:
      *
      * - The first pass finds the closest keyframe to the requested timestamp without decoding anything
@@ -2775,7 +2791,7 @@ easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
 }
 
 
-/*
+/**
  * Output functions
  */
 
@@ -2912,7 +2928,7 @@ const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1)
 }
 
 
-/*
+/**
  * Information functions
  */
 
@@ -3046,7 +3062,7 @@ easyav1_bool easyav1_is_finished(const easyav1_t *easyav1)
 }
 
 
-/*
+/**
  * Settings functions
  */
 
@@ -3217,7 +3233,7 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
 }
 
 
-/*
+/**
  * Destruction functions
  */
 

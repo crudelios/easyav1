@@ -224,8 +224,7 @@ static void display_help(const char *argv_name)
     size_t largest_name = 20;
     size_t largest_abbr = 1;
 
-    for (size_t option = 0; option < OPTION_COUNT; option++)
-    {
+    for (size_t option = 0; option < OPTION_COUNT; option++) {
         if (option_list[option].name && strlen(option_list[option].name) > largest_name) {
             largest_name = strlen(option_list[option].name);
         }
@@ -243,8 +242,7 @@ static void display_help(const char *argv_name)
 
     printf("Options:\n\n");
 
-    for (size_t option = 0; option < OPTION_COUNT; option++)
-    {
+    for (size_t option = 0; option < OPTION_COUNT; option++) {
         const char *name_prefix = option_list[option].name ? "--" : "  ";
         const char *name = option_list[option].name ? option_list[option].name : "";
         const char *abbr_prefix = option_list[option].abbr ? "-" : " ";
@@ -527,7 +525,6 @@ static void init_ui(void)
 {
     data.time_bar.state = TIME_BAR_OPEN;
     data.time_bar.state_start_time = SDL_GetTicks();
-
 }
 
 static int easyav1_decode_thread(void *userdata)
@@ -1077,7 +1074,7 @@ static int show_open_file_dialog(void)
     }
 
     while (!file_chosen) {
-        SDL_Delay(5);
+        SDL_Delay(5); // TODO signal
     }
 
     if (!data.options.filename) {

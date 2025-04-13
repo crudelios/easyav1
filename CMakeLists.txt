@@ -31,13 +31,19 @@ SET(NESTEGG_FILES
 	"ext/nestegg/nestegg.c"
 )
 
-add_library(${PROJECT_NAME} ${HEADER_FILES} ${SOURCE_FILES} ${NESTEGG_FILES} ${THREAD_FILES})
+if(NOT WIN32)
+	set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_package(Threads REQUIRED)
+	set(THREADS_DEPENDENCY Threads::Threads)
+endif()
+
+add_library(${PROJECT_NAME} ${HEADER_FILES} ${SOURCE_FILES} ${NESTEGG_FILES})
 target_include_directories(${PROJECT_NAME} PUBLIC
 	"src"
 	"ext"
 )
 
-target_link_libraries(${PROJECT_NAME} dav1d)
+target_link_libraries(${PROJECT_NAME} dav1d ${THREADS_DEPENDENCY})
 
 find_library(MATH_LIBRARY m)
 if(NOT APPLE AND MATH_LIBRARY)
