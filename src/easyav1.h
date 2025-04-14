@@ -154,7 +154,7 @@ typedef int64_t(*easyav1_tell_func)(void *userdata);
 
 
 /**
- * @brief Custom stream structure for loading data from a source.abort
+ * @brief Custom stream structure for loading data from a source.
  *
  * You'll need to provide the following functions:
  *
