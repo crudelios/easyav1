@@ -132,17 +132,19 @@ struct easyav1_t {
      */
     struct {
 
-        Dav1dContext *context; // The video decoder context handle
+        Dav1dContext *context;      // The video decoder context handle
 
-        easyav1_bool active;   // Whether the video decoder is active
-        unsigned int track;    // The track number of the video in the webm container
+        Dav1dSequenceHeader *sqhdr; // The current sequence header for the video decoder
 
-        unsigned int width;    // The width of the video
-        unsigned int height;   // The height of the video
+        easyav1_bool active;        // Whether the video decoder is active
+        unsigned int track;         // The track number of the video in the webm container
 
-        unsigned int fps;      // The frames per second of the video
+        unsigned int width;         // The width of the video
+        unsigned int height;        // The height of the video
 
-        uint64_t processed_frames; // The number of frames processed by the decoder
+        unsigned int fps;           // The frames per second of the video
+
+        uint64_t processed_frames;  // The number of frames processed by the decoder
 
 
         /**
@@ -953,6 +955,19 @@ static void dequeue_used_video_frames(easyav1_t *easyav1);
  */
 static void dequeue_all_video_frames(easyav1_t *easyav1);
 
+
+/**
+ * @brief Updates the frame picture type.
+ *
+ * @param easyav1 The easyav1 instance.
+ * @param frame The video frame to update.
+ * @param sqhdr The sequence header to use.
+ *
+ * @return `EASYAV1_TRUE` if the frame picture type is valid, `EASYAV1_FALSE` otherwise.
+ */
+static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_frame *frame, Dav1dSequenceHeader *sqhdr);
+
+
 /**
  * @brief Calls the video callback function with the decoded video frame data.
  *
@@ -1251,6 +1266,8 @@ static easyav1_status init_video(easyav1_t *easyav1, unsigned int track)
 
     easyav1->video.width = params.width;
     easyav1->video.height = params.height;
+
+    easyav1->video.sqhdr = NULL;
 
     if (init_video_decoder_thread(easyav1) == EASYAV1_STATUS_ERROR) {
         return EASYAV1_STATUS_ERROR;
@@ -2842,6 +2859,228 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1)
     return has_frame;
 }
 
+static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_frame *frame, Dav1dSequenceHeader *sqhdr)
+{
+    if (sqhdr == NULL || easyav1->video.sqhdr == sqhdr) {
+        return easyav1->video.sqhdr == NULL ? EASYAV1_FALSE : EASYAV1_TRUE;
+    }
+
+    easyav1->video.sqhdr = sqhdr;
+
+    switch (sqhdr->layout) {
+        case DAV1D_PIXEL_LAYOUT_I400:
+            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV400;
+            break;
+        case DAV1D_PIXEL_LAYOUT_I420:
+            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV420;
+            break;
+        case DAV1D_PIXEL_LAYOUT_I422:
+            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV422;
+            break;
+        case DAV1D_PIXEL_LAYOUT_I444:
+            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV444;
+            break;
+        default:
+            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_UNKNOWN;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout.");
+            return EASYAV1_FALSE;
+    }
+
+    switch (sqhdr->hbd) {
+        case 0:
+            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_8;
+            break;
+        case 1:
+            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_10;
+            break;
+        case 2:
+            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_12;
+            break;
+        default:
+            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_UNKNOWN;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported bit depth.");
+            return EASYAV1_FALSE;
+    }
+
+    switch (sqhdr->color_range) {
+        case 0:
+            frame->color_space = EASYAV1_COLOR_SPACE_LIMITED;
+            break;
+        case 1:
+            frame->color_space = EASYAV1_COLOR_SPACE_FULL;
+            break;
+        default:
+            frame->color_space = EASYAV1_COLOR_SPACE_UNKNOWN;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported color space.");
+            return EASYAV1_FALSE;
+    }
+
+    switch (sqhdr->pri) {
+        case DAV1D_COLOR_PRI_BT709:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT709;
+            break;
+        case DAV1D_COLOR_PRI_UNKNOWN:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_UNKNOWN;
+            break;
+        case DAV1D_COLOR_PRI_BT470M:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT470M;
+            break;
+        case DAV1D_COLOR_PRI_BT470BG:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT470BG;
+            break;
+        case DAV1D_COLOR_PRI_BT601:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT601;
+            break;
+        case DAV1D_COLOR_PRI_SMPTE240:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE240;
+            break;
+        case DAV1D_COLOR_PRI_FILM:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_FILM;
+            break;
+        case DAV1D_COLOR_PRI_BT2020:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT2020;
+            break;
+        case DAV1D_COLOR_PRI_XYZ:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_XYZ;
+            break;
+        case DAV1D_COLOR_PRI_SMPTE431:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE431;
+            break;
+        case DAV1D_COLOR_PRI_SMPTE432:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE432;
+            break;
+        case DAV1D_COLOR_PRI_EBU3213:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_EBU3213;
+            break;
+        default:
+            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_UNSPECIFIED;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported color primaries.");
+            return EASYAV1_FALSE;
+    }
+
+    switch (sqhdr->trc) {
+        case DAV1D_TRC_BT709:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT709;
+            break;
+        case DAV1D_TRC_UNKNOWN:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_UNKNOWN;
+            break;
+        case DAV1D_TRC_BT470M:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT470M;
+            break;
+        case DAV1D_TRC_BT470BG:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT470BG;
+            break;
+        case DAV1D_TRC_BT601:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT601;
+            break;
+        case DAV1D_TRC_SMPTE240:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE240;
+            break;
+        case DAV1D_TRC_LINEAR:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LINEAR;
+            break;
+        case DAV1D_TRC_LOG100:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100;
+            break;
+        case DAV1D_TRC_LOG100_SQRT10:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100_SQRT;
+            break;
+        case DAV1D_TRC_IEC61966:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_IEC61966;
+            break;
+        case DAV1D_TRC_BT1361:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT1361;
+            break;
+        case DAV1D_TRC_SRGB:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SRGB;
+            break;
+        case DAV1D_TRC_BT2020_10BIT:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_10;
+            break;
+        case DAV1D_TRC_BT2020_12BIT:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_12;
+            break;
+        case DAV1D_TRC_SMPTE2084:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE2084;
+            break;
+        case DAV1D_TRC_SMPTE428:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE428;
+            break;
+        case DAV1D_TRC_HLG:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_HLG;
+            break;
+        default:
+            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported transfer characteristics.");
+            return EASYAV1_FALSE;
+    }
+
+    switch (sqhdr->mtrx) {
+        case DAV1D_MC_IDENTITY:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_IDENTITY;
+            break;
+        case DAV1D_MC_BT709:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT709;
+            break;
+        case DAV1D_MC_UNKNOWN:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_UNKONWN;
+            break;
+        case DAV1D_MC_FCC:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_FCC;
+            break;
+        case DAV1D_MC_BT470BG:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT470BG;
+            break;
+        case DAV1D_MC_BT601:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT601;
+            break;
+        case DAV1D_MC_SMPTE240:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE240;
+            break;
+        case DAV1D_MC_SMPTE_YCGCO:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE_YCGCO;
+            break;
+        case DAV1D_MC_BT2020_NCL:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT2020_NCL;
+            break;
+        case DAV1D_MC_BT2020_CL:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT2020_CL;
+            break;
+        case DAV1D_MC_SMPTE2085:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE2085;
+            break;
+        case DAV1D_MC_CHROMAT_NCL:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_NCL;
+            break;
+        case DAV1D_MC_CHROMAT_CL:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_CL;
+            break;
+        case DAV1D_MC_ICTCP:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_ICTCP;
+            break;
+        default:
+            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_UNSPECIFIED;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported matrix coefficients.");
+            return EASYAV1_FALSE;
+    }
+
+    switch (sqhdr->chr) {
+        case EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL:
+            frame->chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL;
+                break;
+        case EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED:
+            frame->chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED;
+                break;
+        default:
+            frame->chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_UNKNOWN;
+            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported chroma sample position.");
+            return EASYAV1_FALSE;
+    }
+
+    return EASYAV1_TRUE;
+}
+
 const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
 {
     if (!easyav1) {
@@ -2860,40 +3099,13 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
 
     queued_frame->displayed = EASYAV1_TRUE;
 
-    easyav1_picture_type type = EASYAV1_PICTURE_TYPE_UNKNOWN;
-
     Dav1dPicture *pic = &queued_frame->pic;
-
-    switch (pic->p.layout) {
-        case DAV1D_PIXEL_LAYOUT_I400:
-            type = EASYAV1_PICTURE_TYPE_YUV400_8BPC;
-            break;
-        case DAV1D_PIXEL_LAYOUT_I420:
-            type = EASYAV1_PICTURE_TYPE_YUV420_8BPC;
-            break;
-        case DAV1D_PIXEL_LAYOUT_I422:
-            type = EASYAV1_PICTURE_TYPE_YUV422_8BPC;
-            break;
-        case DAV1D_PIXEL_LAYOUT_I444:
-            type = EASYAV1_PICTURE_TYPE_YUV444_8BPC;
-            break;
-        default:
-            pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
-            log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout.");
-            return NULL;
-    }
-
-    if (pic->p.bpc == 10) {
-        type += EASYAV1_PICTURE_TYPE_10BPC_OFFSET;
-    } else if (pic->p.bpc != 8) {
-        pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
-        log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported bit depth: %d.", pic->p.bpc);
-        return NULL;
-    }
-
     easyav1_video_frame *frame = &easyav1->video.frame;
 
-    frame->picture_type = type;
+    if (update_frame_picture_type(easyav1, frame, pic->seq_hdr) == EASYAV1_FALSE) {
+        pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
+        return NULL;
+    }
 
     frame->data[0] = pic->data[0];
     frame->data[1] = pic->data[1];

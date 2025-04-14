@@ -176,34 +176,128 @@ typedef struct {
 } easyav1_stream;
 
 
-
 /**
- * Video picture types.
+ * Video pixel layouts.
  */
 typedef enum {
-    EASYAV1_PICTURE_TYPE_UNKNOWN = 0,
-    EASYAV1_PICTURE_TYPE_YUV400_8BPC = 1,
-    EASYAV1_PICTURE_TYPE_YUV420_8BPC = 2,
-    EASYAV1_PICTURE_TYPE_YUV422_8BPC = 3,
-    EASYAV1_PICTURE_TYPE_YUV444_8BPC = 4,
-    EASYAV1_PICTURE_TYPE_10BPC_OFFSET = 4,
-    EASYAV1_PICTURE_TYPE_YUV400_10BPC = 5,
-    EASYAV1_PICTURE_TYPE_YUV420_10BPC = 6,
-    EASYAV1_PICTURE_TYPE_YUV422_10BPC = 7,
-    EASYAV1_PICTURE_TYPE_YUV444_10BPC = 8
-} easyav1_picture_type;
+    EASYAV1_PIXEL_LAYOUT_UNKNOWN = 0,
+    EASYAV1_PIXEL_LAYOUT_YUV400 = 1,
+    EASYAV1_PIXEL_LAYOUT_YUV420 = 2,
+    EASYAV1_PIXEL_LAYOUT_YUV422 = 3,
+    EASYAV1_PIXEL_LAYOUT_YUV444 = 4
+} easyav1_pixel_layout;
+
+
+/**
+ * Video color range.
+ */
+typedef enum {
+    EASYAV1_COLOR_SPACE_UNKNOWN = 0,
+    EASYAV1_COLOR_SPACE_LIMITED = 1,
+    EASYAV1_COLOR_SPACE_FULL = 2
+} easyav1_color_space;
+
+
+/**
+ * Bits per color.
+ */
+typedef enum {
+    EASYAV1_BITS_PER_COLOR_UNKNOWN = 0,
+    EASYAV1_BITS_PER_COLOR_8 = 1,
+    EASYAV1_BITS_PER_COLOR_10 = 2,
+    EASYAV1_BITS_PER_COLOR_12 = 3
+} easyav1_bits_per_color;
+
+
+/**
+ * Video color primaries.
+ */
+typedef enum {
+    EASYAV1_COLOR_PRIMARIES_UNSPECIFIED = 0,
+    EASYAV1_COLOR_PRIMARIES_BT709 = 1,
+    EASYAV1_COLOR_PRIMARIES_UNKNOWN = 2,
+    EASYAV1_COLOR_PRIMARIES_BT470M = 3,
+    EASYAV1_COLOR_PRIMARIES_BT470BG = 4,
+    EASYAV1_COLOR_PRIMARIES_BT601 = 5,
+    EASYAV1_COLOR_PRIMARIES_SMPTE240 = 6,
+    EASYAV1_COLOR_PRIMARIES_FILM = 7,
+    EASYAV1_COLOR_PRIMARIES_BT2020 = 8,
+    EASYAV1_COLOR_PRIMARIES_XYZ = 9,
+    EASYAV1_COLOR_PRIMARIES_SMPTE431 = 10,
+    EASYAV1_COLOR_PRIMARIES_SMPTE432 = 11,
+    EASYAV1_COLOR_PRIMARIES_EBU3213 = 12
+} easyav1_color_primaries;
+
+
+/**
+ * Video transfer characteristics. 
+ */
+typedef enum {
+    EASYAV1_TRANSFER_CHARACTERISTICS_UNSPECIFIED = 0,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT709 = 1,
+    EASYAV1_TRANSFER_CHARACTERISTICS_UNKNOWN = 2,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT470M = 3,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT470BG = 4,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT601 = 5,
+    EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE240 = 6,
+    EASYAV1_TRANSFER_CHARACTERISTICS_LINEAR = 7,
+    EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100 = 8,
+    EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100_SQRT = 9,
+    EASYAV1_TRANSFER_CHARACTERISTICS_IEC61966 = 10,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT1361 = 11,
+    EASYAV1_TRANSFER_CHARACTERISTICS_SRGB = 12,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_10 = 13,
+    EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_12 = 14,
+    EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE2084 = 15,
+    EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE428 = 16,
+    EASYAV1_TRANSFER_CHARACTERISTICS_HLG = 17
+} easyav1_transfer_characteristics;
+
+
+/**
+ * Video matrix coefficients.
+ */
+typedef enum {
+    EASYAV1_MATRIX_COEFFICIENTS_UNSPECIFIED = 0,
+    EASYAV1_MATRIX_COEFFICIENTS_IDENTITY = 1,
+    EASYAV1_MATRIX_COEFFICIENTS_BT709 = 2,
+    EASYAV1_MATRIX_COEFFICIENTS_UNKONWN = 3,
+    EASYAV1_MATRIX_COEFFICIENTS_FCC = 4,
+    EASYAV1_MATRIX_COEFFICIENTS_BT470BG = 5,
+    EASYAV1_MATRIX_COEFFICIENTS_BT601 = 6,
+    EASYAV1_MATRIX_COEFFICIENTS_SMPTE240 = 7,
+    EASYAV1_MATRIX_COEFFICIENTS_SMPTE_YCGCO = 8,
+    EASYAV1_MATRIX_COEFFICIENTS_BT2020_NCL = 9,
+    EASYAV1_MATRIX_COEFFICIENTS_BT2020_CL = 10,
+    EASYAV1_MATRIX_COEFFICIENTS_SMPTE2085 = 11,
+    EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_NCL = 12,
+    EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_CL = 13,
+    EASYAV1_MATRIX_COEFFICIENTS_ICTCP = 14
+} easyav1_matrix_coefficients;
+
+typedef enum {
+    EASYAV1_CHROMA_SAMPLE_POSITION_UNKNOWN = 0,
+    EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL = 1,
+    EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED = 2
+} easyav1_chroma_sample_position;
 
 
 /**
  * Video frame.
  */
 typedef struct {
-    easyav1_picture_type picture_type; // The picture type.
-    unsigned int width;  // The width of the frame.
-    unsigned int height; // The height of the frame.
-    easyav1_timestamp timestamp; // The timestamp of the frame.
-    const void *data[3]; // The data for each YUV plane.
-    size_t stride[3];    // The stride for each YUV plane.
+    easyav1_pixel_layout pixel_layout;                         // The pixel layout.
+    easyav1_bits_per_color bits_per_color;                     // The bits per color.
+    easyav1_color_space color_space;                           // The color space.
+    easyav1_color_primaries color_primaries;                   // The color primaries.
+    easyav1_transfer_characteristics transfer_characteristics; // The transfer characteristics.
+    easyav1_matrix_coefficients matrix_coefficients;           // The matrix coefficients.
+    easyav1_chroma_sample_position chroma_sample_position;     // The chroma sample position.
+    unsigned int width;                                        // The width of the frame.
+    unsigned int height;                                       // The height of the frame.
+    easyav1_timestamp timestamp;                               // The timestamp of the frame.
+    const void *data[3];                                       // The data for each YUV plane.
+    size_t stride[3];                                          // The stride for each YUV plane.
 } easyav1_video_frame;
 
 

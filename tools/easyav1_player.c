@@ -80,6 +80,16 @@ static struct {
         } thread;
     } SDL;
     struct {
+        unsigned int width;
+        unsigned int height;
+        easyav1_bits_per_color bits_per_color;
+        easyav1_color_space color_space;
+        easyav1_color_primaries color_primaries;
+        easyav1_transfer_characteristics transfer_characteristics;
+        easyav1_matrix_coefficients matrix_coefficients;
+        easyav1_chroma_sample_position chroma_sample_position;
+    } video_frame;
+    struct {
         int x;
         int y;
         easyav1_timestamp last_move_inside;
@@ -324,7 +334,7 @@ static int init_easyav1(const char *filename)
 {
     easyav1_settings settings = easyav1_default_settings();
     settings.callbacks.audio = audio_callback;
-    settings.audio_offset_time = -22050 / 2048 + data.options.audio_offset;
+    settings.audio_offset_time = data.options.audio_offset;
     settings.video_track = data.options.video_track;
     settings.audio_track = data.options.audio_track;
     settings.enable_audio = !data.options.disable_audio;
@@ -453,18 +463,6 @@ static int init_sdl(void)
     unsigned int width = easyav1_get_video_width(data.easyav1);
     unsigned int height = easyav1_get_video_height(data.easyav1);
 
-    if (easyav1_has_video_track(data.easyav1) && width > 0 && height > 0) {
-        data.SDL.textures.video = SDL_CreateTexture(data.SDL.renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, width, height);
-        if (!data.SDL.textures.video) {
-            printf("Failed to create video texture. Reason: %s\n", SDL_GetError());
-            quit_sdl();
-            return 0;
-        }
-
-        // Keep the video texture black while it has no actual contents
-        SDL_SetTextureColorMod(data.SDL.textures.video, 0, 0, 0);
-    }
-
     if (easyav1_has_audio_track(data.easyav1)) {
         SDL_AudioSpec audio_spec = {
             .freq = easyav1_get_audio_sample_rate(data.easyav1),
@@ -484,6 +482,237 @@ static int init_sdl(void)
     }
 
     return 1;
+}
+
+static int must_create_new_texture(const easyav1_video_frame *frame)
+{
+    return data.SDL.textures.video == NULL ||
+        data.video_frame.width != frame->width || data.video_frame.height != frame->height ||
+        data.video_frame.bits_per_color != frame->bits_per_color ||
+        data.video_frame.color_space != frame->color_space ||
+        data.video_frame.color_primaries != frame->color_primaries ||
+        data.video_frame.transfer_characteristics != frame->transfer_characteristics ||
+        data.video_frame.matrix_coefficients != frame->matrix_coefficients ||
+        data.video_frame.chroma_sample_position != frame->chroma_sample_position;
+}
+
+static SDL_Colorspace generate_colorspace_from_frame(const easyav1_video_frame *frame)
+{
+    SDL_ColorPrimaries color_primaries;
+
+    switch (frame->color_primaries) {
+        case EASYAV1_COLOR_PRIMARIES_BT709:
+            color_primaries = SDL_COLOR_PRIMARIES_BT709;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_UNSPECIFIED:
+            color_primaries = SDL_COLOR_PRIMARIES_UNSPECIFIED;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_BT470M:
+            color_primaries = SDL_COLOR_PRIMARIES_BT470M;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_BT470BG:
+            color_primaries = SDL_COLOR_PRIMARIES_BT470BG;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_BT601:
+            color_primaries = SDL_COLOR_PRIMARIES_BT601;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_SMPTE240:
+            color_primaries = SDL_COLOR_PRIMARIES_SMPTE240;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_FILM:
+            color_primaries = SDL_COLOR_PRIMARIES_GENERIC_FILM;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_BT2020:
+            color_primaries = SDL_COLOR_PRIMARIES_BT2020;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_XYZ:
+            color_primaries = SDL_COLOR_PRIMARIES_XYZ;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_SMPTE431:
+            color_primaries = SDL_COLOR_PRIMARIES_SMPTE431;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_SMPTE432:
+            color_primaries = SDL_COLOR_PRIMARIES_SMPTE432;
+            break;
+        case EASYAV1_COLOR_PRIMARIES_EBU3213:
+            color_primaries = SDL_COLOR_PRIMARIES_EBU3213;
+            break;
+        default:
+            color_primaries = SDL_COLOR_PRIMARIES_UNSPECIFIED;
+            break;
+    }
+
+    SDL_TransferCharacteristics transfer_characteristics;
+
+    switch (frame->transfer_characteristics) {
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT709:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_BT709;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_UNKNOWN:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT470M:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_GAMMA22;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT470BG:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_GAMMA28;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT601:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_BT601;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE240:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_SMPTE240;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_LINEAR:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_LINEAR;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_LOG100;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100_SQRT:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_LOG100_SQRT10;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_IEC61966:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_IEC61966;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT1361:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_BT1361;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_SRGB:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_SRGB;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_10:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_BT2020_10BIT;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_12:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_BT2020_12BIT;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE2084:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_PQ;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE428:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_SMPTE428;
+            break;
+        case EASYAV1_TRANSFER_CHARACTERISTICS_HLG:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_HLG;
+            break;
+        default:
+            transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
+            break;
+    }
+
+    SDL_MatrixCoefficients matrix_coefficients;
+
+    switch (frame->matrix_coefficients) {
+        case EASYAV1_MATRIX_COEFFICIENTS_IDENTITY:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_IDENTITY;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_BT709:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_BT709;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_FCC:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_FCC;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_BT470BG:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_BT470BG;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_BT601:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_BT601;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_SMPTE240:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_SMPTE240;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_SMPTE_YCGCO:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_YCGCO;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_BT2020_NCL:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_BT2020_NCL;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_BT2020_CL:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_BT2020_CL;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_SMPTE2085:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_SMPTE2085;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_NCL:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_CHROMA_DERIVED_NCL;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_CL:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_CHROMA_DERIVED_CL;
+            break;
+        case EASYAV1_MATRIX_COEFFICIENTS_ICTCP:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_ICTCP;
+            break;
+        default:
+            matrix_coefficients = SDL_MATRIX_COEFFICIENTS_UNSPECIFIED;
+            break;
+    }
+
+    SDL_ColorRange color_range;
+
+    switch (frame->color_space) {
+        case EASYAV1_COLOR_SPACE_LIMITED:
+            color_range = SDL_COLOR_RANGE_LIMITED;
+            break;
+        case EASYAV1_COLOR_SPACE_FULL:
+            color_range = SDL_COLOR_RANGE_FULL;
+            break;
+        default:
+            color_range = SDL_COLOR_RANGE_UNKNOWN;
+            break;
+    }
+
+    SDL_ChromaLocation chroma_location;
+
+    switch (frame->chroma_sample_position) {
+        case EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED:
+            chroma_location = SDL_CHROMA_LOCATION_TOPLEFT;
+            break;
+        default:
+            chroma_location = SDL_CHROMA_LOCATION_LEFT;
+            break;
+    }
+
+    return SDL_DEFINE_COLORSPACE(SDL_COLOR_TYPE_YCBCR, color_range, color_primaries, transfer_characteristics,
+        matrix_coefficients, chroma_location);
+}
+
+static void create_texture_for_video_frame(const easyav1_video_frame *frame)
+{
+    if (must_create_new_texture(frame)) {
+        if (data.SDL.textures.video) {
+            SDL_DestroyTexture(data.SDL.textures.video);
+            data.SDL.textures.video = NULL;
+        }
+
+        SDL_PropertiesID texture_properties = SDL_CreateProperties();
+
+        if (texture_properties) {
+            SDL_Colorspace colorspace = generate_colorspace_from_frame(frame);
+
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame->width);
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame->height);
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_IYUV);
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER,
+                SDL_TEXTUREACCESS_STREAMING);
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, colorspace);
+
+            data.SDL.textures.video = SDL_CreateTextureWithProperties(data.SDL.renderer, texture_properties);
+
+            SDL_DestroyProperties(texture_properties);
+        } else {
+            data.SDL.textures.video = SDL_CreateTexture(data.SDL.renderer, SDL_PIXELFORMAT_IYUV,
+                SDL_TEXTUREACCESS_STREAMING, frame->width, frame->height);
+        }
+
+        if (!data.SDL.textures.video) {
+            printf("Failed to create video texture. Reason: %s\n", SDL_GetError());
+            return;
+        }
+
+        data.video_frame.width = frame->width;
+        data.video_frame.height = frame->height;
+    }
 }
 
 static int init_fonts(void)
@@ -1073,8 +1302,12 @@ static int show_open_file_dialog(void)
     if (file_dialog_properties) {
         SDL_SetPointerProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, &filter);
         SDL_SetNumberProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 1);
-        SDL_SetStringProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_TITLE_STRING, "Please select a WebM video file:");
+        SDL_SetStringProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_TITLE_STRING,
+            "Please select a WebM video file:");
+
         SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, selected_file, &file_chosen, file_dialog_properties);
+
+        SDL_DestroyProperties(file_dialog_properties);
     } else {
         SDL_ShowOpenFileDialog(selected_file, &file_chosen, NULL, &filter, 1, NULL, false);
     }
@@ -1171,14 +1404,20 @@ int main(int argc, char **argv)
 
             const easyav1_video_frame *frame = easyav1_get_video_frame(data.easyav1);
 
-            // SDL can only handle YUV420 8-bit per component frames, so we just ignore other formats
-            if (frame && frame->picture_type == EASYAV1_PICTURE_TYPE_YUV420_8BPC) {
-                SDL_UpdateYUVTexture(data.SDL.textures.video, NULL, frame->data[0], frame->stride[0], frame->data[1],
-                    frame->stride[1], frame->data[2], frame->stride[2]);
-                SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
+            if (frame) {
+                create_texture_for_video_frame(frame);
+
+                // SDL can only handle YUV420 8-bit per component frames, so we just ignore other formats
+                if (data.SDL.textures.video) {
+                    SDL_UpdateYUVTexture(data.SDL.textures.video, NULL, frame->data[0], frame->stride[0], frame->data[1],
+                        frame->stride[1], frame->data[2], frame->stride[2]);
+                    SDL_SetTextureColorMod(data.SDL.textures.video, 255, 255, 255);
+                }
             }
 
-            SDL_RenderTexture(data.SDL.renderer, data.SDL.textures.video, NULL, get_aspect_ratio_rect());
+            if (data.SDL.textures.video) {
+                SDL_RenderTexture(data.SDL.renderer, data.SDL.textures.video, NULL, get_aspect_ratio_rect());
+            }
         }
 
         draw_time_bar();
