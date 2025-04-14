@@ -93,7 +93,11 @@ int main(int argc, const char **argv)
         return 3;
     }
 
-    printf("Video size: %ux%u\n", easyav1_get_video_width(easyav1), easyav1_get_video_height(easyav1));
+    printf("Video duration: %" PRIu64 ":%02" PRIu64 " (%" PRIu64 " ms).\n",
+        easyav1_get_duration(easyav1) / 60000, (easyav1_get_duration(easyav1) / 1000) % 60,
+        easyav1_get_duration(easyav1));
+    printf("Video size: %ux%u, %u FPS.\n", easyav1_get_video_width(easyav1), easyav1_get_video_height(easyav1),
+        easyav1_get_video_fps(easyav1));
     fflush(stdout);
 
     benchmark_clock clock;
