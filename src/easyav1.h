@@ -113,7 +113,7 @@ typedef enum {
 
 
 /**
- * @brief A funtion that reads data from a source.
+ * @brief A function that reads data from a source.
  *
  * @param buffer The buffer to read the data into.
  * @param size The size of the buffer.
