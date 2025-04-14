@@ -347,6 +347,13 @@ static int init_easyav1(const char *filename)
         return 0;
     }
 
+    unsigned int sample_rate = easyav1_get_audio_sample_rate(data.easyav1);
+
+    if (sample_rate) {
+        settings.audio_offset_time = -sample_rate / 2048 + data.options.audio_offset;
+        easyav1_update_settings(data.easyav1, &settings);
+    }
+
     data.aspect_ratio = (float) easyav1_get_video_width(data.easyav1) / easyav1_get_video_height(data.easyav1);
 
     return 1;
@@ -439,7 +446,6 @@ static int init_sdl(void)
         return 0;
     }
 
-    SDL_SetRenderVSync(data.SDL.renderer, 1);
     SDL_SetRenderDrawColor(data.SDL.renderer, 0, 0, 0, 255);
     SDL_RenderClear(data.SDL.renderer);
     SDL_RenderPresent(data.SDL.renderer);
@@ -1139,6 +1145,13 @@ int main(int argc, char **argv)
         return 5;
     }
 
+    easyav1_timestamp last_loop_time = SDL_GetTicks();
+    unsigned int fps = easyav1_get_video_fps(data.easyav1);
+    if (fps == 0) {
+        fps = 30;
+    }
+    easyav1_timestamp min_loop_time = 500 / fps;
+
     while (!data.quit) {
 
         handle_input();
@@ -1175,6 +1188,15 @@ int main(int argc, char **argv)
         SDL_UnlockMutex(data.SDL.thread.mutex.seek);
 
         SDL_RenderPresent(data.SDL.renderer);
+
+        easyav1_timestamp current_loop_time = SDL_GetTicks();
+
+        // Loop at twice the video's FPS
+        if (current_loop_time - last_loop_time < min_loop_time) {
+            SDL_Delay(min_loop_time - (current_loop_time - last_loop_time));
+        }
+
+        last_loop_time = current_loop_time;
 
         if (easyav1_is_finished(data.easyav1)) {
             SDL_FlushAudioStream(data.SDL.audio_stream);
