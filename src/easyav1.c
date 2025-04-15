@@ -37,7 +37,7 @@ typedef CONDITION_VARIABLE pthread_cond_t;
 
 #define AUDIO_BUFFER_SIZE 4096
 #define PACKET_QUEUE_BASE_CAPACITY 16
-#define VIDEO_FRAME_QUEUE_SIZE 20
+#define VIDEO_FRAME_QUEUE_SIZE 10
 
 #define VORBIS_HEADERS_COUNT 3
 
@@ -133,8 +133,8 @@ struct easyav1_t {
     struct {
 
         Dav1dContext *context;      // The video decoder context handle
-
         Dav1dSequenceHeader *sqhdr; // The current sequence header for the video decoder
+        Dav1dPicture *frame_image;  // The current frame image for the video decoder
 
         easyav1_bool active;        // Whether the video decoder is active
         unsigned int track;         // The track number of the video in the webm container
@@ -145,17 +145,6 @@ struct easyav1_t {
         unsigned int fps;           // The frames per second of the video
 
         uint64_t processed_frames;  // The number of frames processed by the decoder
-
-
-        /**
-         * The video frame queue - used to store the video frames in a queue, to be processed later
-         */
-        struct {
-            queued_video_frame_t frames[VIDEO_FRAME_QUEUE_SIZE]; // The video frames in the queue
-
-            size_t count;        // The total number of items in the queue
-            size_t begin;        // The index of the first item in the queue
-        } frame_queue;
 
         easyav1_video_frame frame; // The current video frame data and metadata
 
@@ -1655,7 +1644,7 @@ static easyav1_packet *get_undecoded_video_packet(easyav1_t *easyav1, easyav1_pa
         return NULL;
     }
 
-    for (size_t i = 0; i < queue->count; i++) {
+    for (size_t i = 0; i < queue->count && i < VIDEO_FRAME_QUEUE_SIZE; i++) {
         size_t index = (queue->begin + i) % queue->capacity;
 
         easyav1_packet *packet = &queue->items[index];
@@ -1875,7 +1864,7 @@ static easyav1_bool must_fetch_video_packets(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    if (easyav1->packets.video_queue.count >= VIDEO_FRAME_QUEUE_SIZE / 2) {
+    if (easyav1->packets.video_queue.count >= VIDEO_FRAME_QUEUE_SIZE) {
         return EASYAV1_FALSE;
     }
 
@@ -2129,13 +2118,9 @@ static void *video_decoder_thread(void *arg)
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.output);
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
 
-        if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
-
-            while (easyav1->video.frame_queue.count == VIDEO_FRAME_QUEUE_SIZE) {
-                pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_frame_slots_available,
-                    &easyav1->video.decoder_thread.mutexes.output);
-            }
-
+        while (easyav1->video.frame_queue.count == VIDEO_FRAME_QUEUE_SIZE) {
+            pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_frame_slots_available,
+                &easyav1->video.decoder_thread.mutexes.output);
         }
 
         enqueue_video_frame(easyav1, packet, &pic);
