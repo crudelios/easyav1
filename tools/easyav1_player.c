@@ -360,7 +360,7 @@ static int init_easyav1(const char *filename)
     unsigned int sample_rate = easyav1_get_audio_sample_rate(data.easyav1);
 
     if (sample_rate) {
-        settings.audio_offset_time = -sample_rate / 2048 + data.options.audio_offset;
+        settings.audio_offset_time -= sample_rate / 2048;
         easyav1_update_settings(data.easyav1, &settings);
     }
 
