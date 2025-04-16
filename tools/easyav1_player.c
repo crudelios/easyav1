@@ -1295,7 +1295,6 @@ static int show_open_file_dialog(void)
             "Please select a WebM video file:");
 
         SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, selected_file, &file_chosen, file_dialog_properties);
-        SDL_PumpEvents();
 
         SDL_DestroyProperties(file_dialog_properties);
     } else {
@@ -1303,7 +1302,7 @@ static int show_open_file_dialog(void)
     }
 
     while (!file_chosen) {
-        SDL_Delay(5); // TODO signal
+        SDL_Delay(30);
         SDL_PumpEvents();
     }
 
@@ -1339,7 +1338,7 @@ int main(int argc, char **argv)
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Select a file", "Please select a valid video file.", NULL);
         quit_sdl();
 
-        return 1;
+        return 2;
     }
 
     init_easyav1(data.options.filename);
@@ -1348,7 +1347,7 @@ int main(int argc, char **argv)
         printf("Failed to initialize easyav1.\n");
         quit_sdl();
 
-        return 2;
+        return 3;
     }
 
     if (!init_window()) {
@@ -1357,7 +1356,7 @@ int main(int argc, char **argv)
         easyav1_destroy(&data.easyav1);
 		close_file_stream();
 
-        return 3;
+        return 4;
     }
 
     if (!init_fonts()) {
@@ -1366,7 +1365,7 @@ int main(int argc, char **argv)
         easyav1_destroy(&data.easyav1);
         close_file_stream();
 
-        return 4;
+        return 5;
     }
 
     init_ui();
@@ -1376,7 +1375,7 @@ int main(int argc, char **argv)
         easyav1_destroy(&data.easyav1);
         close_file_stream();
 
-        return 5;
+        return 6;
     }
 
     easyav1_timestamp last_loop_time = SDL_GetTicks();
