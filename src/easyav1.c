@@ -1650,7 +1650,7 @@ static easyav1_packet *get_video_packet_to_display(easyav1_t *easyav1)
 
         if (packet->timestamp > easyav1->position) {
             break;
-        } else if (packet->video_frame.m.timestamp) {
+        } else if (packet->video_frame.frame_hdr) {
             result = packet;
         }
     }
@@ -1664,7 +1664,7 @@ static void cleanup_video_packet_queue(easyav1_t *easyav1)
 
     easyav1_packet *packet = retrieve_first_packet_from_queue(easyav1, queue);
 
-    while (packet && packet->timestamp <= easyav1->position && packet->video_frame.m.timestamp) {
+    while (packet && packet->timestamp <= easyav1->position && packet->video_frame.frame_hdr) {
         release_packet_from_queue(easyav1, packet);
         packet = retrieve_first_packet_from_queue(easyav1, queue);
     }
@@ -1711,7 +1711,7 @@ static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet
         nestegg_free_packet(packet->packet);
     }
 
-    if (packet->video_frame.m.timestamp) {
+    if (packet->video_frame.frame_hdr) {
         dav1d_picture_unref(&packet->video_frame);
     }
 
@@ -1894,8 +1894,18 @@ static easyav1_bool must_fetch_video_packets(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    if (easyav1->packets.video_queue.count >= FRAMES_TO_PRELOAD) {
-        return EASYAV1_FALSE;
+    easyav1_packet_queue *video_queue = &easyav1->packets.video_queue;
+
+    if (video_queue->count < FRAMES_TO_PRELOAD) {
+        return EASYAV1_TRUE;
+    }
+
+    for (size_t index = 0; index < video_queue->count; index++) {
+        easyav1_packet *packet = &video_queue->items[(video_queue->begin + index) % video_queue->capacity];
+
+        if (packet->timestamp > easyav1->position) {
+            return video_queue->count - index < FRAMES_TO_PRELOAD ? EASYAV1_TRUE : EASYAV1_FALSE;
+        }
     }
 
     return EASYAV1_TRUE;
@@ -2925,10 +2935,9 @@ static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_
 
 static void release_video_frame(easyav1_t *easyav1)
 {
-    if (easyav1->video.frame_image.m.timestamp) {
+    if (easyav1->video.frame_image.frame_hdr) {
         dav1d_picture_unref(&easyav1->video.frame_image);
     }
-    memset(&easyav1->video.frame_image, 0, sizeof(Dav1dPicture));
     memset(&easyav1->video.frame, 0, sizeof(easyav1_video_frame));
 }
 
