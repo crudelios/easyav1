@@ -345,9 +345,6 @@ typedef enum {
  *
  * - `enable_audio`: Indicates whether audio decoding is enabled.
  *
- * - `skip_unprocessed_frames`: Indicates whether unprocessed frames should be skipped.
- *    If this is set to `EASYAV1_TRUE`, the decoder will skip frames that have not been processed by the video callback.
- *
  * - `interlace_audio`: Indicates whether audio should be interlaced.
  *    If this is set to `EASYAV1_TRUE`, the audio samples will be interleaved. If it is set to `EASYAV1_FALSE`,
  *    the samples will be deinterleaved.
@@ -410,7 +407,6 @@ typedef enum {
 typedef struct {
     easyav1_bool enable_video;
     easyav1_bool enable_audio;
-    easyav1_bool skip_unprocessed_frames;
     easyav1_bool interlace_audio;
     easyav1_bool close_handle_on_destroy;
     struct {
@@ -432,7 +428,6 @@ typedef struct {
  *
  * - Video enabled (`.enable_video = EASYAV1_TRUE`)
  * - Audio enabled (`.enable_audio = EASYAV1_TRUE`)
- * - Skip unprocessed frames (`.skip_unprocessed_frames = EASYAV1_TRUE`)
  * - Interlace audio (`.interlace_audio = EASYAV1_TRUE`)
  * - Don't close the handle on destroy (`.close_handle_on_destroy = EASYAV1_FALSE`)
  * - No callbacks (`callbacks.video = NULL, callbacks.audio = NULL, callbacks.userdata = NULL`)
