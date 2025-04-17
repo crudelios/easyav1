@@ -1398,7 +1398,6 @@ int main(int argc, char **argv)
         }
 
         SDL_LockMutex(data.SDL.thread.mutex.seek);
-        SDL_LockMutex(data.SDL.thread.mutex.picture);
 
         if (easyav1_has_video_track(data.easyav1)) {
 
@@ -1423,7 +1422,6 @@ int main(int argc, char **argv)
         draw_time_bar();
         draw_play_pause_animation();
 
-        SDL_UnlockMutex(data.SDL.thread.mutex.picture);
         SDL_UnlockMutex(data.SDL.thread.mutex.seek);
 
         SDL_RenderPresent(data.SDL.renderer);

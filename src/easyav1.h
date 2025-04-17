@@ -690,7 +690,7 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1);
 /**
  * @brief Gets the current video frame, is one is available.
  *
- * The frame is only valid until the next call to `easyav1_decode_next`, `easyav1_decode_until` ot `easyav1_decode_for`.
+ * The returned frame is only valid until the next call to `easyav1_get_video_frame`.
  * Calling this function will mark the frame as displayed, so you will only receive a decoded frame once.
  *
  * @param easyav1 The easyav1 instance.

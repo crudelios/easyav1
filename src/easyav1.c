@@ -37,7 +37,8 @@ typedef CONDITION_VARIABLE pthread_cond_t;
 
 #define AUDIO_BUFFER_SIZE 4096
 #define PACKET_QUEUE_BASE_CAPACITY 16
-#define VIDEO_FRAME_QUEUE_SIZE 20
+#define VIDEO_FRAMES_TO_PREFETCH 10
+#define VIDEO_FRAME_QUEUE_SIZE (VIDEO_FRAMES_TO_PREFETCH + 1)
 
 #define VORBIS_HEADERS_COUNT 3
 
@@ -103,15 +104,6 @@ typedef struct {
 
 
 /**
- * Video frame data structure - used to store the video frame data and metadata
- */
-typedef struct {
-    Dav1dPicture pic;       // The internal picture handle
-    easyav1_bool displayed; // Whether the current frame has been displayed
-} queued_video_frame_t;
-
-
-/**
  * The main easyav1 structure - used to store all the data and metadata for the easyav1 library
  */
 struct easyav1_t {
@@ -136,6 +128,8 @@ struct easyav1_t {
 
         Dav1dSequenceHeader *sqhdr; // The current sequence header for the video decoder
 
+        Dav1dPicture picture;       // The current picture being displayed
+
         easyav1_bool active;        // Whether the video decoder is active
         unsigned int track;         // The track number of the video in the webm container
 
@@ -151,7 +145,7 @@ struct easyav1_t {
          * The video frame queue - used to store the video frames in a queue, to be processed later
          */
         struct {
-            queued_video_frame_t frames[VIDEO_FRAME_QUEUE_SIZE]; // The video frames in the queue
+            Dav1dPicture frames[VIDEO_FRAME_QUEUE_SIZE]; // The video frames in the queue
 
             size_t count;        // The total number of items in the queue
             size_t begin;        // The index of the first item in the queue
@@ -178,7 +172,6 @@ struct easyav1_t {
              */
             struct {
                 pthread_cond_t has_packets;               // Used to signal when there are new video frame packets to process
-                pthread_cond_t has_frame_slots_available; // Used to signal when there are free slots in the video frame queue
                 pthread_cond_t has_frames_to_display;     // Used to signal when there are new video frames to display
             } conditions;
 
@@ -832,7 +825,7 @@ static easyav1_packet *queue_new_packet(easyav1_t *easyav1, easyav1_packet_queue
  *
  * @return A pointer to the oldest video packet in the queue or `NULL` if there are no packets to decode.
  */
-static easyav1_packet *get_undecoded_video_packet(easyav1_t *easyav1, easyav1_packet_queue *queue);
+static easyav1_packet *get_video_packet_to_decode(easyav1_t *easyav1, easyav1_packet_queue *queue);
 
 /**
  * @brief Gets the oldest packet from the queue.
@@ -923,16 +916,15 @@ static easyav1_packet *get_next_packet(easyav1_t *easyav1);
 static void enqueue_video_frame(easyav1_t *easyav1, easyav1_packet *packet, Dav1dPicture *pic);
 
 /**
- * @brief Grabs the most recent video frame from the queue that hasn't been displayed yet.
+ * @brief Grabs the oldest video frame from the queue.
  *
  * The frame is not removed from the queue.
- * Older frames that haven't been displayed are marked as displayed and are ignored.
  *
  * @param easyav1 The easyav1 context to get the video frame from.
  *
- * @return A pointer to the most recent video undisplayed frame in the queue or `NULL` if there are no frames to display.
+ * @return A pointer to the oldest video frame in the queue or `NULL` if there are no frames to display.
  */
-static queued_video_frame_t *retrieve_undisplayed_video_frame_from_queue(easyav1_t *easyav1);
+static Dav1dPicture *get_oldest_video_frame_from_queue(easyav1_t *easyav1);
 
 /**
  * @brief Removes a video frame from the queue.
@@ -1373,7 +1365,6 @@ static easyav1_status init_video_decoder_thread(easyav1_t *easyav1)
     }
 
     if (pthread_cond_init(&easyav1->video.decoder_thread.conditions.has_packets, NULL) ||
-        pthread_cond_init(&easyav1->video.decoder_thread.conditions.has_frame_slots_available, NULL) ||
         pthread_cond_init(&easyav1->video.decoder_thread.conditions.has_frames_to_display, NULL)) {
         LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to create decoder thread condition variable.");
         return EASYAV1_STATUS_ERROR;
@@ -1649,19 +1640,25 @@ static easyav1_packet *queue_new_packet(easyav1_t *easyav1, easyav1_packet_queue
     return &queue->items[index];
 }
 
-static easyav1_packet *get_undecoded_video_packet(easyav1_t *easyav1, easyav1_packet_queue *queue)
+static easyav1_packet *get_video_packet_to_decode(easyav1_t *easyav1, easyav1_packet_queue *queue)
 {
     if (!queue->count) {
         return NULL;
     }
 
-    for (size_t i = 0; i < queue->count; i++) {
+    size_t packets_after_timestamp = 0;
+
+    for (size_t i = 0; i < queue->count && packets_after_timestamp < VIDEO_FRAMES_TO_PREFETCH; i++) {
         size_t index = (queue->begin + i) % queue->capacity;
 
         easyav1_packet *packet = &queue->items[index];
 
         if (packet->type == PACKET_TYPE_VIDEO && packet->packet != NULL && packet->video_frame == NULL) {
             return packet;
+        }
+
+        if (packet->timestamp > easyav1->position) {
+            packets_after_timestamp++;
         }
     }
 
@@ -1875,7 +1872,7 @@ static easyav1_bool must_fetch_video_packets(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    if (easyav1->packets.video_queue.count >= VIDEO_FRAME_QUEUE_SIZE / 2) {
+    if (easyav1->packets.video_queue.count > VIDEO_FRAMES_TO_PREFETCH) {
         return EASYAV1_FALSE;
     }
 
@@ -1971,75 +1968,43 @@ static easyav1_packet *get_next_packet(easyav1_t *easyav1)
 static void enqueue_video_frame(easyav1_t *easyav1, easyav1_packet *packet, Dav1dPicture *pic)
 {
     if (easyav1->video.frame_queue.count >= VIDEO_FRAME_QUEUE_SIZE) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Video frame queue is full, discarding oldest frame.");
         dequeue_video_frame(easyav1);
     }
 
     size_t index = (easyav1->video.frame_queue.begin + easyav1->video.frame_queue.count) % VIDEO_FRAME_QUEUE_SIZE;
-    queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[index];
-    frame->displayed = EASYAV1_FALSE;
-    frame->pic = *pic;
-    packet->video_frame = &frame->pic;
+    packet->video_frame = &easyav1->video.frame_queue.frames[index];
+    memcpy(packet->video_frame, pic, sizeof(Dav1dPicture));
 
     easyav1->video.frame_queue.count++;
 }
 
-static queued_video_frame_t *retrieve_undisplayed_video_frame_from_queue(easyav1_t *easyav1)
+static Dav1dPicture *get_oldest_video_frame_from_queue(easyav1_t *easyav1)
 {
-    queued_video_frame_t *frame = NULL;
-
-    unsigned int frame_count = 0;
-
-    for (size_t i = 0; i < easyav1->video.frame_queue.count; i++) {
-        size_t index = (easyav1->video.frame_queue.begin + i) % VIDEO_FRAME_QUEUE_SIZE;
-
-        if (easyav1->video.frame_queue.frames[index].displayed == EASYAV1_FALSE &&
-            easyav1->video.frame_queue.frames[index].pic.m.timestamp <= easyav1->position) {
-            if (frame) {
-                // Mark skipped frame as displayed
-                frame->displayed = EASYAV1_TRUE;
-                frame_count++;
-            }
-            frame = &easyav1->video.frame_queue.frames[index];
-        } else if (easyav1->video.frame_queue.frames[index].pic.m.timestamp > easyav1->position) {
-            break;
-        }
+    if (easyav1->video.frame_queue.count == 0) {
+        return NULL;
     }
 
-    if (frame_count > 0) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Skipping %u video frames.", frame_count);
-    }
-
-    return frame;
+    return &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
 }
 
 static void dequeue_video_frame(easyav1_t *easyav1)
 {
-    if (easyav1->video.frame_queue.count == 0) {
+    Dav1dPicture *pic = get_oldest_video_frame_from_queue(easyav1);
+
+    if (!pic) {
         return;
     }
 
-    queued_video_frame_t *frame = &easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin];
+    if (pic->frame_hdr) {
+        dav1d_picture_unref(pic);
+    }
 
-    dav1d_picture_unref(&frame->pic);
-    memset(frame, 0, sizeof(queued_video_frame_t));
     easyav1->video.frame_queue.count--;
 
     if (easyav1->video.frame_queue.count == 0) {
         easyav1->video.frame_queue.begin = 0;
     } else {
         easyav1->video.frame_queue.begin = (easyav1->video.frame_queue.begin + 1) % VIDEO_FRAME_QUEUE_SIZE;
-    }
-}
-
-static void dequeue_used_video_frames(easyav1_t *easyav1)
-{
-    while (easyav1->video.frame_queue.count > 0) {
-        if (easyav1->video.frame_queue.frames[easyav1->video.frame_queue.begin].displayed == EASYAV1_TRUE) {
-            dequeue_video_frame(easyav1);
-        } else {
-            break;
-        }
     }
 }
 
@@ -2068,12 +2033,6 @@ static void callback_video(easyav1_t *easyav1)
     }
 
     easyav1->settings.callbacks.video(frame, easyav1->settings.callbacks.userdata);
-
-    dequeue_used_video_frames(easyav1);
-
-    if (easyav1->video.frame_queue.count < VIDEO_FRAME_QUEUE_SIZE) {
-        pthread_cond_signal(&easyav1->video.decoder_thread.conditions.has_frame_slots_available);
-    }
 }
 
 static void callback_audio(easyav1_t *easyav1)
@@ -2099,7 +2058,7 @@ static void *video_decoder_thread(void *arg)
 
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.input);
 
-        easyav1_packet *packet = get_undecoded_video_packet(easyav1, &easyav1->packets.video_queue);
+        easyav1_packet *packet = get_video_packet_to_decode(easyav1, &easyav1->packets.video_queue);
 
         while (packet == NULL) {
             pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_packets,
@@ -2110,7 +2069,7 @@ static void *video_decoder_thread(void *arg)
                 return 0;
             }
 
-            packet = get_undecoded_video_packet(easyav1, &easyav1->packets.video_queue);
+            packet = get_video_packet_to_decode(easyav1, &easyav1->packets.video_queue);
         }
 
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.decoder);
@@ -2128,15 +2087,6 @@ static void *video_decoder_thread(void *arg)
 
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.output);
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
-
-        if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
-
-            while (easyav1->video.frame_queue.count == VIDEO_FRAME_QUEUE_SIZE) {
-                pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_frame_slots_available,
-                    &easyav1->video.decoder_thread.mutexes.output);
-            }
-
-        }
 
         enqueue_video_frame(easyav1, packet, &pic);
 
@@ -2157,13 +2107,6 @@ static void pause_video_decoder(easyav1_t *easyav1)
 
     // Wait for the video decoder to finish processing pending frame
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.decoder);
-
-    // Release a video frame slot if needed to prevent a deadlock (at this point all frames will be released anyway)
-    if (easyav1->video.frame_queue.count == VIDEO_FRAME_QUEUE_SIZE) {
-        dequeue_video_frame(easyav1);
-        pthread_cond_signal(&easyav1->video.decoder_thread.conditions.has_frame_slots_available);
-    }
-
     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
 }
 
@@ -2405,6 +2348,13 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
             pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.decoder);
 
             while (!packet->video_frame) {
+
+                // On some occasions, some video packets may have been fetched after the last signal to the decoder thread.
+                // In this case, we need to signal the decoder thread again to process the new packets.
+                if (get_video_packet_to_decode(easyav1, &easyav1->packets.video_queue)) {
+                    pthread_cond_signal(&easyav1->video.decoder_thread.conditions.has_packets);
+                }
+
                 log(EASYAV1_LOG_LEVEL_INFO, "Waiting for video frame to be decoded.");
                 pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_frames_to_display,
                     &easyav1->video.decoder_thread.mutexes.decoder);
@@ -2458,16 +2408,6 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.output);
-
-    dequeue_used_video_frames(easyav1);
-
-    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
-
-    if (easyav1->video.frame_queue.count < VIDEO_FRAME_QUEUE_SIZE) {
-        pthread_cond_signal(&easyav1->video.decoder_thread.conditions.has_frame_slots_available);
-    }
-
     easyav1_packet *packet = get_next_packet(easyav1);
 
     if (easyav1->status == EASYAV1_STATUS_FINISHED) {
@@ -2519,16 +2459,6 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         return EASYAV1_STATUS_OK;
     }
 
-    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.output);
-
-    dequeue_used_video_frames(easyav1);
-
-    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
-
-    if (easyav1->video.frame_queue.count < VIDEO_FRAME_QUEUE_SIZE) {
-        pthread_cond_signal(&easyav1->video.decoder_thread.conditions.has_frame_slots_available);
-    }
-
     // Skip to timestamp if too far behind and at different cue points
     if (easyav1->settings.skip_unprocessed_frames == EASYAV1_TRUE &&
         timestamp - easyav1->position > DECODE_UNTIL_SKIP_MS &&
@@ -2536,7 +2466,13 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         log(EASYAV1_LOG_LEVEL_INFO, "Decoder too far behind at %llu, skipping to requested timestamp %llu.",
             easyav1->position, timestamp);
 
+        easyav1_bool use_fast_seeking = easyav1->settings.use_fast_seeking;
+        easyav1->settings.use_fast_seeking = EASYAV1_TRUE;
+
+        // Use fast seeking to prevent constantly seeking to the next seek point
         easyav1_seek_to_timestamp(easyav1, timestamp);
+
+        easyav1->settings.use_fast_seeking = use_fast_seeking;
     }
 
     easyav1_status status = easyav1->status;
@@ -2559,7 +2495,7 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
 
         easyav1->position = packet->timestamp;
 
-        easyav1_status status = decode_packet(easyav1, packet);
+        status = decode_packet(easyav1, packet);
 
         easyav1_packet_type packet_type = packet->type;
 
@@ -2854,9 +2790,9 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    easyav1_bool has_frame = retrieve_undisplayed_video_frame_from_queue(easyav1) == NULL ? EASYAV1_FALSE : EASYAV1_TRUE;
+    Dav1dPicture *pic = get_oldest_video_frame_from_queue(easyav1);
 
-    return has_frame;
+    return pic == NULL || pic->m.timestamp > easyav1->position ? EASYAV1_FALSE : EASYAV1_TRUE;
 }
 
 static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_frame *frame, Dav1dSequenceHeader *sqhdr)
@@ -3088,22 +3024,34 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
         return NULL;
     }
 
+    // Remove the old picture being displayed if it exists
+    if (easyav1->video.picture.frame_hdr) {
+        dav1d_picture_unref(&easyav1->video.picture);
+    }
+
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.output);
 
-    queued_video_frame_t *queued_frame = retrieve_undisplayed_video_frame_from_queue(easyav1);
+    Dav1dPicture *pic = get_oldest_video_frame_from_queue(easyav1);
 
-    if (!queued_frame) {
+    // No pending new image to display - don't return anything
+    if (!pic || pic->m.timestamp > easyav1->position) {
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
         return NULL;
     }
 
-    queued_frame->displayed = EASYAV1_TRUE;
+    // Copy the image to the output frame
+    memcpy(&easyav1->video.picture, pic, sizeof(Dav1dPicture));
 
-    Dav1dPicture *pic = &queued_frame->pic;
+    // Remove the reference to the image from the frame queue and free the slot
+    memset(pic, 0, sizeof(Dav1dPicture));
+    dequeue_video_frame(easyav1);
+
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
+
+    pic = &easyav1->video.picture;
     easyav1_video_frame *frame = &easyav1->video.frame;
 
     if (update_frame_picture_type(easyav1, frame, pic->seq_hdr) == EASYAV1_FALSE) {
-        pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
         return NULL;
     }
 
@@ -3119,8 +3067,6 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
     frame->height = (unsigned int) pic->p.h;
 
     frame->timestamp = (uint64_t) pic->m.timestamp;
-
-    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.output);
 
     return frame;
 }
@@ -3487,7 +3433,11 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
 static void destroy_video(easyav1_t *easyav1)
 {
     pause_video_decoder(easyav1);
-    
+
+    if (easyav1->video.picture.frame_hdr) {
+        dav1d_picture_unref(&easyav1->video.picture);
+    }
+
     dequeue_all_video_frames(easyav1);
 
     easyav1->video.decoder_thread.exiting = EASYAV1_TRUE;
@@ -3551,7 +3501,6 @@ void easyav1_destroy(easyav1_t **handle)
     pthread_mutex_destroy(&easyav1->video.decoder_thread.mutexes.decoder);
     pthread_mutex_destroy(&easyav1->video.decoder_thread.mutexes.output);
     pthread_cond_destroy(&easyav1->video.decoder_thread.conditions.has_packets);
-    pthread_cond_destroy(&easyav1->video.decoder_thread.conditions.has_frame_slots_available);
     pthread_cond_destroy(&easyav1->video.decoder_thread.conditions.has_frames_to_display);
 
     if (easyav1->stream.data) {
