@@ -405,19 +405,8 @@ static void quit_sdl(void)
     SDL_Quit();
 }
 
-static int init_sdl(void)
+static int init_window(void)
 {
-    SDL_InitFlags init_flags = SDL_INIT_VIDEO;
-
-    if (easyav1_has_audio_track(data.easyav1)) {
-        init_flags |= SDL_INIT_AUDIO;
-    }
-
-    if (!SDL_Init(init_flags)) {
-        printf("Failed to initialize SDL. Reason: %s\n", SDL_GetError());
-        return 0;
-    }
-
     const SDL_DisplayMode *display_mode = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
     if (!display_mode) {
 		printf("Failed to get display mode! Reason %s\n", SDL_GetError());
@@ -1313,7 +1302,8 @@ static int show_open_file_dialog(void)
     }
 
     while (!file_chosen) {
-        SDL_Delay(5); // TODO signal
+        SDL_Delay(30);
+        SDL_PumpEvents();
     }
 
     if (!data.options.filename) {
@@ -1334,29 +1324,39 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    // We must initialize SDL before opening the file dialog
+    // to avoid a hang on Linux
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
+        printf("Failed to initialize SDL. Reason: %s\n", SDL_GetError());
+        return 1;
+    }
+
     if (!data.options.filename && !show_open_file_dialog()) {
         const char *file_name = parse_file_name(argv[0]);
 
         printf("Usage: \"%s [OPTIONS] <filename>\"\n\n", file_name);  
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Select a file", "Please select a valid video file.", NULL);
+        quit_sdl();
 
-        return 1;
+        return 2;
     }
 
     init_easyav1(data.options.filename);
 
     if (!data.easyav1) {
         printf("Failed to initialize easyav1.\n");
+        quit_sdl();
 
-        return 2;
+        return 3;
     }
 
-    if (!init_sdl()) {
+    if (!init_window()) {
         printf("Failed to initialize SDL.\n");
+        quit_sdl();
         easyav1_destroy(&data.easyav1);
 		close_file_stream();
 
-        return 3;
+        return 4;
     }
 
     if (!init_fonts()) {
@@ -1365,7 +1365,7 @@ int main(int argc, char **argv)
         easyav1_destroy(&data.easyav1);
         close_file_stream();
 
-        return 4;
+        return 5;
     }
 
     init_ui();
@@ -1375,7 +1375,7 @@ int main(int argc, char **argv)
         easyav1_destroy(&data.easyav1);
         close_file_stream();
 
-        return 5;
+        return 6;
     }
 
     easyav1_timestamp last_loop_time = SDL_GetTicks();
