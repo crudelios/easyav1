@@ -1266,7 +1266,7 @@ static void selected_file(void *userdata, const char * const *filelist, int filt
         return;
     }
     
-    if (!*filelist) {
+    if (!*filelist || !**filelist) {
         *((int*)userdata) = 1;
         return;
     }
