@@ -593,7 +593,7 @@ easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1);
  *
  * @return `EASYAV1_TRUE` if there is a video track, `EASYAV1_FALSE` otherwise.
  */
-easyav1_bool easyav1_has_video_track(const easyav1_t *easyav1);
+easyav1_bool easyav1_has_video_track(easyav1_t *easyav1);
 
 
 /**
