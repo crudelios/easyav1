@@ -593,7 +593,7 @@ easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1);
  *
  * @return `EASYAV1_TRUE` if there is a video track, `EASYAV1_FALSE` otherwise.
  */
-easyav1_bool easyav1_has_video_track(easyav1_t *easyav1);
+easyav1_bool easyav1_has_video_track(const easyav1_t *easyav1);
 
 
 /**
@@ -707,7 +707,7 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1);
  *
  * @return The total number of video frames processed.
  */
-uint64_t easyav1_get_total_video_frames_processed(const easyav1_t *easyav1);
+uint64_t easyav1_get_total_video_frames_processed(easyav1_t *easyav1);
 
 
 /**
