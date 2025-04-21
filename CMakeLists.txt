@@ -35,6 +35,13 @@ if(NOT WIN32)
 	set(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
 	set(THREADS_DEPENDENCY Threads::Threads)
+
+	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+		add_compile_options("-fsanitize=thread,undefined")
+		add_compile_options("-g3")
+		add_link_options("-fsanitize=thread,undefined")
+		add_link_options("-g3")
+	endif()
 endif()
 
 add_library(${PROJECT_NAME} ${HEADER_FILES} ${SOURCE_FILES} ${NESTEGG_FILES})

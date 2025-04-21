@@ -583,7 +583,7 @@ easyav1_status easyav1_get_status(const easyav1_t *easyav1);
  *
  * @return The current timestamp.
  */
-easyav1_timestamp easyav1_get_current_timestamp(const easyav1_t *easyav1);
+easyav1_timestamp easyav1_get_current_timestamp(easyav1_t *easyav1);
 
 
 /**

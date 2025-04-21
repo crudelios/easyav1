@@ -75,8 +75,9 @@ static struct {
             SDL_Thread *decoder;
             struct {
                 SDL_Mutex *seek;
-                SDL_Mutex *picture;
+                SDL_Mutex *file_dialog;
             } mutex;
+            SDL_Condition *selected_file;
         } thread;
     } SDL;
     struct {
@@ -373,10 +374,8 @@ static void exit_decoder_thread(void)
 {
     SDL_WaitThread(data.SDL.thread.decoder, NULL);
     SDL_DestroyMutex(data.SDL.thread.mutex.seek);
-    SDL_DestroyMutex(data.SDL.thread.mutex.picture);
 
     data.SDL.thread.decoder = NULL;
-    data.SDL.thread.mutex.picture = NULL;
     data.SDL.thread.mutex.seek = NULL;
 }
 
@@ -756,13 +755,9 @@ static int easyav1_decode_thread(void *userdata)
     easyav1_timestamp last_timestamp = SDL_GetTicks();
     easyav1_timestamp current_timestamp = last_timestamp;
 
-    SDL_LockMutex(data.SDL.thread.mutex.picture);
-
     static easyav1_timestamp last_seek_time = 0;
 
     while (!data.quit && easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
-
-        SDL_UnlockMutex(data.SDL.thread.mutex.picture);
 
         int did_seek = 0;
 
@@ -840,23 +835,17 @@ static int easyav1_decode_thread(void *userdata)
         if (data.mouse.pressed || data.playback.paused || did_seek) {
             last_timestamp = current_timestamp;
         }
-
-        SDL_LockMutex(data.SDL.thread.mutex.picture);
-
     }
-
-    SDL_UnlockMutex(data.SDL.thread.mutex.picture);
 
     return 0;
 }
 
 static int init_decoder_thread(void)
 {
-    data.SDL.thread.mutex.picture = SDL_CreateMutex();
     data.SDL.thread.mutex.seek = SDL_CreateMutex();
     data.SDL.thread.decoder = SDL_CreateThread(easyav1_decode_thread, "easyav1_decode_thread", NULL);
 
-    if (!data.SDL.thread.mutex.picture || !data.SDL.thread.mutex.seek || !data.SDL.thread.decoder) {
+    if (!data.SDL.thread.mutex.seek || !data.SDL.thread.decoder) {
         printf("Failed to create decoder thread. Reason: %s\n", SDL_GetError());
         data.quit = 1;
         exit_decoder_thread();
@@ -1260,14 +1249,24 @@ static const SDL_FRect *get_aspect_ratio_rect(void)
 
 static void selected_file(void *userdata, const char * const *filelist, int filter)
 {
+    SDL_LockMutex(data.SDL.thread.mutex.file_dialog);
+
     if (!filelist) {
         printf("Error creating the file dialog window.\n");
-        *((int*)userdata) = 1;
+        *((int *) userdata) = 1;
+
+        SDL_SignalCondition(data.SDL.thread.selected_file);
+        SDL_UnlockMutex(data.SDL.thread.mutex.file_dialog);
+
         return;
     }
     
     if (!*filelist || !**filelist) {
-        *((int*)userdata) = 1;
+        *((int *) userdata) = 1;
+
+        SDL_SignalCondition(data.SDL.thread.selected_file);
+        SDL_UnlockMutex(data.SDL.thread.mutex.file_dialog);
+
         return;
     }
 
@@ -1277,16 +1276,34 @@ static void selected_file(void *userdata, const char * const *filelist, int filt
 
     data.options.filename = filename;
 
-    *((int*)userdata) = 1;
+    *((int *) userdata) = 1;
+
+    SDL_SignalCondition(data.SDL.thread.selected_file);
+    SDL_UnlockMutex(data.SDL.thread.mutex.file_dialog);
 }
 
 static int show_open_file_dialog(void)
 {
+    data.SDL.thread.mutex.file_dialog = SDL_CreateMutex();
+    if (!data.SDL.thread.mutex.file_dialog) {
+        printf("Failed to create file dialog mutex. Reason: %s\n", SDL_GetError());
+        return 0;
+    }
+
+    data.SDL.thread.selected_file = SDL_CreateCondition();
+    if (!data.SDL.thread.selected_file) {
+        printf("Failed to create file dialog condition. Reason: %s\n", SDL_GetError());
+        SDL_DestroyMutex(data.SDL.thread.mutex.file_dialog);
+        return 0;
+    }
+
     SDL_DialogFileFilter filter = { "WebM Video Files", "webm" };
 
     int file_chosen = 0;
 
     SDL_PropertiesID file_dialog_properties = SDL_CreateProperties();
+
+    SDL_LockMutex(data.SDL.thread.mutex.file_dialog);
 
     if (file_dialog_properties) {
         SDL_SetPointerProperty(file_dialog_properties, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, &filter);
@@ -1302,9 +1319,17 @@ static int show_open_file_dialog(void)
     }
 
     while (!file_chosen) {
-        SDL_Delay(30);
+        SDL_WaitConditionTimeout(data.SDL.thread.selected_file, data.SDL.thread.mutex.file_dialog, 30);
         SDL_PumpEvents();
     }
+
+    SDL_UnlockMutex(data.SDL.thread.mutex.file_dialog);
+
+    SDL_DestroyCondition(data.SDL.thread.selected_file);
+    SDL_DestroyMutex(data.SDL.thread.mutex.file_dialog);
+
+    data.SDL.thread.mutex.file_dialog = NULL;
+    data.SDL.thread.selected_file = NULL;
 
     if (!data.options.filename) {
         return 0;
