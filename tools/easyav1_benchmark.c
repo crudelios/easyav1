@@ -79,6 +79,7 @@ int main(int argc, const char **argv)
     easyav1_settings settings = easyav1_default_settings();
     settings.enable_audio = 0;
     settings.skip_unprocessed_frames = 0;
+    settings.log_level = EASYAV1_LOG_LEVEL_ERROR;
 
     easyav1_t *easyav1 = easyav1_init_from_filename(argv[1], &settings);
 

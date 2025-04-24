@@ -1691,6 +1691,12 @@ static easyav1_packet *get_video_packet_to_decode(easyav1_t *easyav1, easyav1_pa
 
     size_t packets_after_timestamp = 0;
 
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
+
+    easyav1_timestamp timestamp = easyav1->position;
+    
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
+
     for (size_t i = 0; i < queue->count && packets_after_timestamp < VIDEO_FRAMES_TO_PREFETCH; i++) {
         size_t index = (queue->begin + i) % queue->capacity;
 
@@ -1700,7 +1706,7 @@ static easyav1_packet *get_video_packet_to_decode(easyav1_t *easyav1, easyav1_pa
             return packet;
         }
 
-        if (packet->timestamp > easyav1->position) {
+        if (packet->timestamp > timestamp) {
             packets_after_timestamp++;
         }
     }
@@ -1758,7 +1764,12 @@ static void release_packet_from_queue(easyav1_t *easyav1, easyav1_packet *packet
         easyav1->packets.synced = EASYAV1_FALSE;
     } else {
         if (easyav1->packets.video_queue.count == 0 && easyav1->packets.audio_queue.count == 0) {
+
+            pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
+
             easyav1->status = EASYAV1_STATUS_FINISHED;
+
+            pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
         }
     }
 }
@@ -2158,10 +2169,13 @@ static void *video_decoder_thread(void *arg)
             pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_packets,
                 &easyav1->video.decoder_thread.mutexes.io);
 
+            pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
+
             if (handle_video_decoder_thread_command(easyav1) == THREAD_COMMAND_STOP) {
-                pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
                 return 0;
             }
+
+            pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
 
             packet = get_video_packet_to_decode(easyav1, &easyav1->packets.video_queue);
         }
@@ -2716,15 +2730,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
     for (int pass = 0; pass < 2; pass++) {
 
-        if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-            pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
-        }
+        pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
 
         easyav1->position = corrected_timestamp;
 
-        if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-            pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
-        }
+        pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
 
         if (nestegg_track_seek(easyav1->webm.context, track, ms_to_internal_timestmap(easyav1, corrected_timestamp))) {
             LOG_AND_SET_ERROR(EASYAV1_STATUS_IO_ERROR, "Failed to seek to requested timestamp %u.", easyav1->position);
@@ -2745,7 +2755,13 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
 
         if (easyav1->video.active == EASYAV1_TRUE) {
+
+            pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
+
             dequeue_all_video_frames(easyav1);
+
+            pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
+
             dav1d_flush(easyav1->video.context);
             easyav1->seek = SEEKING_FOR_SQHDR;
         }
@@ -2779,15 +2795,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
             if (packet) {
 
-                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-                    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
-                }
+                pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
 
                 easyav1->position = packet->timestamp;
 
-                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-                    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
-                }
+                pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
 
                 if (pass == 1) {
                     if (packet->timestamp >= last_keyframe_timestamp) {
@@ -3160,9 +3172,13 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
         dav1d_picture_unref(&easyav1->video.picture);
     }
 
-    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
 
     easyav1_timestamp timestamp = easyav1->position;
+
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
+
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
 
     Dav1dPicture *pic = get_oldest_video_frame_from_queue(easyav1);
 
