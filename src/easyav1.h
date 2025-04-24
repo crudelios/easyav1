@@ -574,7 +574,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
  *
  * - `EASYAV1_STATUS_ERROR`: There was an error.
  */
-easyav1_status easyav1_get_status(const easyav1_t *easyav1);
+easyav1_status easyav1_get_status(easyav1_t *easyav1);
 
 /**
  * @brief Gets the current timestamp of the parsing.
@@ -773,7 +773,7 @@ easyav1_status easyav1_update_settings(easyav1_t *easyav1, const easyav1_setting
  *
  * @return `EASYAV1_TRUE` if the instance has finished decoding, `EASYAV1_FALSE` otherwise.
  */
-easyav1_bool easyav1_is_finished(const easyav1_t *easyav1);
+easyav1_bool easyav1_is_finished(easyav1_t *easyav1);
 
 
 /**
