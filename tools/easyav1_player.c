@@ -94,7 +94,11 @@ static struct {
         int x;
         int y;
         easyav1_timestamp last_move_inside;
-        int pressed;
+        struct {
+            int start_x;
+            int start_y;
+            int active;
+        } pressed;
         int double_click;
     } mouse;
     struct {
@@ -832,7 +836,7 @@ static int easyav1_decode_thread(void *userdata)
         current_timestamp = SDL_GetTicks();
 
         // Pause the video
-        if (data.mouse.pressed || data.playback.paused || did_seek) {
+        if (data.mouse.pressed.active || data.playback.paused || did_seek) {
             last_timestamp = current_timestamp;
         }
     }
@@ -956,6 +960,15 @@ static void toggle_fullscreen(void)
     }
 }
 
+static int is_inside_time_bar(int x_offset, int x, int y)
+{
+    int width;
+    int height;
+    SDL_GetWindowSize(data.SDL.window, &width, &height);
+
+    return x > x_offset && x < width - TIME_BAR_SIDE_PADDING - 2 && y > height - TIME_BAR_HEIGHT && y < height - 1;
+}
+
 static void handle_input(void)
 {
     handle_events();
@@ -967,9 +980,20 @@ static void handle_input(void)
     float mouse_x;
     float mouse_y;
     int mouse_moved = 0;
-    int mouse_was_pressed = data.mouse.pressed;
+    int mouse_was_pressed = data.mouse.pressed.active;
 
-    data.mouse.pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON_LMASK) != 0;
+    int mouse_is_pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON_LMASK) != 0;
+
+    if (mouse_is_pressed) {
+        data.mouse.pressed.active = 1;
+
+        if (!mouse_was_pressed) {
+            data.mouse.pressed.start_x = mouse_x;
+            data.mouse.pressed.start_y = mouse_y;
+        }
+    } else {
+        data.mouse.pressed.active = 0;
+    }
 
     if (data.mouse.double_click) {
         data.mouse.double_click = 0;
@@ -984,7 +1008,7 @@ static void handle_input(void)
             data.mouse.y = mouse_y;
             mouse_moved = 1;
         } else if (!mouse_was_pressed) {
-            data.mouse.pressed = 0;
+            data.mouse.pressed.active = 0;
         }
     }
 
@@ -994,21 +1018,37 @@ static void handle_input(void)
 
     easyav1_timestamp hovered_timestamp = 0;
 
-    if (mouse_x > 0 && mouse_x >= x_offset) {
+    if (mouse_x > 0 && mouse_x >= x_offset && time_bar_width > 0) {
         hovered_timestamp = easyav1_get_duration(data.easyav1) * (mouse_x - x_offset) / (float) time_bar_width;
     }
 
-    int mouse_is_hovering_timestamp = mouse_x > x_offset && mouse_x <= width - TIME_BAR_SIDE_PADDING - 2 &&
-        mouse_y > height - TIME_BAR_HEIGHT && mouse_y < height - 1;
+    int mouse_is_hovering_timestamp = is_inside_time_bar(x_offset, mouse_x, mouse_y);
 
-    if (data.mouse.pressed) {
-        if (mouse_is_hovering_timestamp || (mouse_was_pressed && mouse_moved)) {
+    if (data.mouse.pressed.active) {
+
+        int mouse_was_pressed_on_time_bar = is_inside_time_bar(x_offset,
+                                                               data.mouse.pressed.start_x, data.mouse.pressed.start_y);
+
+        if (mouse_was_pressed && mouse_moved && mouse_was_pressed_on_time_bar) {
+            easyav1_settings settings = easyav1_get_current_settings(data.easyav1);
+            if (settings.use_fast_seeking != EASYAV1_TRUE) {
+                settings.use_fast_seeking = EASYAV1_TRUE;
+                easyav1_update_settings(data.easyav1, &settings);
+            }
             request_seeking(SEEK_TO, hovered_timestamp);
-        }
+        } else if (mouse_is_hovering_timestamp) {
+            request_seeking(SEEK_TO, hovered_timestamp);
+        } 
 
         if (!mouse_is_hovering_timestamp && !mouse_was_pressed && !easyav1_is_finished(data.easyav1)) {
             data.playback.paused = !data.playback.paused;
             data.playback.last_change = SDL_GetTicks();
+        }
+    } else {
+        easyav1_settings settings = easyav1_get_current_settings(data.easyav1);
+        if (settings.use_fast_seeking != data.options.use_fast_seek) {
+            settings.use_fast_seeking = data.options.use_fast_seek ? EASYAV1_TRUE : EASYAV1_FALSE;
+            easyav1_update_settings(data.easyav1, &settings);
         }
     }
 
@@ -1355,6 +1395,8 @@ int main(int argc, char **argv)
         printf("Failed to initialize SDL. Reason: %s\n", SDL_GetError());
         return 1;
     }
+
+    data.options.filename = "../../data/garden.webm";
 
     if (!data.options.filename && !show_open_file_dialog()) {
         const char *file_name = parse_file_name(argv[0]);
