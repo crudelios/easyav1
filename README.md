@@ -12,6 +12,8 @@ Internally easyAV1 uses Mozilla's nestegg WebM demuxer to demux the video and au
 
 ## How do I use it?
 
+The following code will play a video file at the proper speed:
+
 ```c
 #include <easyav1.h>
  
@@ -33,7 +35,14 @@ int main(int argc, char **argv)
         printf("Audio channels: %u\n", easyav1_get_audio_channels(easyav1));
     }
 
-    while (easyav1_decode_next(easyav1) == EASYAV1_STATUS_OK) {
+    if (easyav1_play(easyav1) != EASYAV1_STATUS_OK) {
+        printf("Failed to start playing video.\n");
+        easyav1_destroy(easyav1);
+
+        return 2;
+    }
+
+    while (easyav1_get_status(easyav1) == EASYAV1_STATUS_OK) {
         if (easyav1_has_video_frame(easyav1) == EASYAV1_TRUE) {
             const easyav1_video_frame *video_frame = easyav1_get_video_frame(easyav1);
             // Do something with the video frame.
@@ -44,6 +53,8 @@ int main(int argc, char **argv)
             // Do something with the audio frame.
         }
     }
+
+    easyav1_stop(easyav1);
 
     if (easyav1_is_finished(easyav1) == EASYAV1_TRUE) {
         printf("Finished decoding.\n");
@@ -56,7 +67,12 @@ int main(int argc, char **argv)
 }
 ```
 
-...or you can check the file `tools/easyav1_player.c` for a proper mini player.
+Alternatively, you can check the `tools` folder:
+
+- `easyav1_benchmark.c` - A simple benchmark tool, plays all frames as fast as possible and measures how long it takes
+  to decode them.
+- `easyav1_player.c` - A proper mini player with some basic features such as seeking.
+
 
 ## Okay, but how do I build it?
 

@@ -72,11 +72,8 @@ static struct {
         } textures;
         SDL_AudioStream *audio_stream;
         struct {
-            SDL_Thread *decoder;
             struct {
-                SDL_Mutex *seek;
                 SDL_Mutex *file_dialog;
-                SDL_Mutex *misc;
             } mutex;
             SDL_Condition *selected_file;
         } thread;
@@ -373,17 +370,6 @@ static int init_easyav1(const char *filename)
     data.aspect_ratio = (float) easyav1_get_video_width(data.easyav1) / easyav1_get_video_height(data.easyav1);
 
     return 1;
-}
-
-static void exit_decoder_thread(void)
-{
-    SDL_WaitThread(data.SDL.thread.decoder, NULL);
-    SDL_DestroyMutex(data.SDL.thread.mutex.seek);
-    SDL_DestroyMutex(data.SDL.thread.mutex.misc);
-
-    data.SDL.thread.decoder = NULL;
-    data.SDL.thread.mutex.seek = NULL;
-    data.SDL.thread.mutex.misc = NULL;
 }
 
 static void quit_sdl(void)
@@ -757,138 +743,6 @@ static void init_ui(void)
     data.time_bar.state_start_time = SDL_GetTicks();
 }
 
-static int easyav1_decode_thread(void *userdata)
-{
-    easyav1_timestamp last_timestamp = SDL_GetTicks();
-    easyav1_timestamp current_timestamp = last_timestamp;
-
-    static easyav1_timestamp last_seek_time = 0;
-
-    SDL_LockMutex(data.SDL.thread.mutex.misc);
-
-    int quitting = data.quit;
-
-    SDL_UnlockMutex(data.SDL.thread.mutex.misc);
-
-    while (!quitting && easyav1_decode_for(data.easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
-
-        int did_seek = 0;
-
-        SDL_LockMutex(data.SDL.thread.mutex.seek);
-
-        seek_mode seek_mode = data.seek.mode;
-        easyav1_timestamp seek_timestamp = data.seek.timestamp;
-
-        SDL_UnlockMutex(data.SDL.thread.mutex.seek);
-
-        // Handle seeking
-        if (seek_mode != SEEK_NONE) {
-
-            SDL_ClearAudioStream(data.SDL.audio_stream);
-
-            easyav1_timestamp timestamp = easyav1_get_current_timestamp(data.easyav1);
-
-            int should_seek = 1;
-
-            switch (seek_mode) {
-                case SEEK_BACKWARD:
-                    seek_timestamp = SKIP_TIME_MS >= timestamp ? 0 : timestamp - SKIP_TIME_MS;
-                    break;
-                case SEEK_FORWARD:
-                    seek_timestamp = timestamp + SKIP_TIME_MS;
-                    break;
-                case SEEK_TO:
-                    if (last_seek_time == seek_timestamp) {
-                        easyav1_timestamp difference = 0;
-                        
-                        if (seek_timestamp > timestamp) {
-                            difference = seek_timestamp - timestamp;
-                        } else {
-                            difference = timestamp - seek_timestamp;
-                        }
-
-                        if (difference < 200) {
-                            should_seek = 0;
-                        }
-                    }
-                    break;
-                default:
-                    seek_mode = SEEK_NONE;
-                    break;
-            }
-
-            SDL_LockMutex(data.SDL.thread.mutex.seek);
-
-            if (should_seek) {
-
-                if (easyav1_seek_to_timestamp(data.easyav1, seek_timestamp) != EASYAV1_STATUS_OK) {
-                    printf("Failed to seek to timestamp %" PRIu64 "\n", seek_timestamp);
-
-                    SDL_LockMutex(data.SDL.thread.mutex.misc);
-                    
-                    data.quit = 1;
-                    quitting = 1;
-
-                    SDL_UnlockMutex(data.SDL.thread.mutex.misc);
-
-                    SDL_UnlockMutex(data.SDL.thread.mutex.seek);
-
-                    break;
-                }
-
-                last_seek_time = seek_timestamp;
-
-                did_seek = 1;
-
-            }
-
-            data.seek.mode = SEEK_NONE;
-            data.seek.timestamp = seek_timestamp;
-
-            SDL_UnlockMutex(data.SDL.thread.mutex.seek);
-
-        } else {
-            // Prevent busy waiting
-            if (current_timestamp == last_timestamp) {
-                SDL_Delay(1);
-            }
-        }
-
-        // Update timestamp
-        last_timestamp = current_timestamp;
-        current_timestamp = SDL_GetTicks();
-
-        SDL_LockMutex(data.SDL.thread.mutex.misc);
-
-        quitting = data.quit;
-
-        // Pause the video
-        if (data.mouse.pressed.active || data.playback.paused || did_seek) {
-            last_timestamp = current_timestamp;
-        }
-
-        SDL_UnlockMutex(data.SDL.thread.mutex.misc);
-    }
-
-    return 0;
-}
-
-static int init_decoder_thread(void)
-{
-    data.SDL.thread.mutex.seek = SDL_CreateMutex();
-    data.SDL.thread.mutex.misc = SDL_CreateMutex();
-    data.SDL.thread.decoder = SDL_CreateThread(easyav1_decode_thread, "easyav1_decode_thread", NULL);
-
-    if (!data.SDL.thread.mutex.seek || !data.SDL.thread.mutex.misc || !data.SDL.thread.decoder) {
-        printf("Failed to create decoder thread. Reason: %s\n", SDL_GetError());
-        data.quit = 1;
-        exit_decoder_thread();
-        return 0;
-    }
-
-    return 1;
-}
-
 static void get_timestamp_string(easyav1_timestamp timestamp, char *buffer, size_t size)
 {
     if (timestamp > 3600000) {
@@ -941,40 +795,20 @@ static void draw_timestamp(unsigned int x, unsigned int y, easyav1_timestamp tim
     }
 }
 
-static void request_seeking(seek_mode mode, easyav1_timestamp timestamp)
-{
-    // Pending seeking, do nothing
-    if (data.seek.mode != SEEK_NONE) {
-        return;
-    }
-
-    SDL_LockMutex(data.SDL.thread.mutex.seek);
-
-    data.seek.mode = mode;
-    data.seek.timestamp = timestamp;
-
-    SDL_UnlockMutex(data.SDL.thread.mutex.seek);
-}
-
 static void handle_events(void)
 {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_EVENT_QUIT || (ev.type == SDL_EVENT_KEY_UP && ev.key.key == SDLK_ESCAPE)) {
-
-            SDL_LockMutex(data.SDL.thread.mutex.misc);
-
             data.quit = 1;
-
-            SDL_UnlockMutex(data.SDL.thread.mutex.misc);
         }
 
         if (ev.type == SDL_EVENT_KEY_UP && ev.key.key == SDLK_RIGHT) {
-            request_seeking(SEEK_FORWARD, SKIP_TIME_MS);
+            easyav1_seek_forward(data.easyav1, SKIP_TIME_MS);
         }
 
         if (ev.type == SDL_EVENT_KEY_UP && ev.key.key == SDLK_LEFT) {
-            request_seeking(SEEK_BACKWARD, SKIP_TIME_MS);
+            easyav1_seek_backward(data.easyav1, SKIP_TIME_MS);
         }
 
         if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT && ev.button.clicks == 2) {
@@ -1019,8 +853,6 @@ static void handle_input(void)
 
     int mouse_is_pressed = (SDL_GetMouseState(&mouse_x, &mouse_y) & SDL_BUTTON_LMASK) != 0;
 
-    SDL_LockMutex(data.SDL.thread.mutex.misc);
-
     if (mouse_is_pressed) {
         data.mouse.pressed.active = 1;
 
@@ -1043,8 +875,6 @@ static void handle_input(void)
             data.mouse.pressed.active = 0;
         }
     }
-
-    SDL_UnlockMutex(data.SDL.thread.mutex.misc);
 
     if (data.mouse.double_click) {
         data.mouse.double_click = 0;
@@ -1069,16 +899,18 @@ static void handle_input(void)
                                                                data.mouse.pressed.start_x, data.mouse.pressed.start_y);
 
         if (mouse_is_hovering_timestamp || (mouse_was_pressed && mouse_moved && mouse_was_pressed_on_time_bar)) {
-            request_seeking(SEEK_TO, hovered_timestamp);
+            easyav1_seek_to_timestamp(data.easyav1, hovered_timestamp);
         }
 
         if (!mouse_is_hovering_timestamp && !mouse_was_pressed && !easyav1_is_finished(data.easyav1)) {
 
-            SDL_LockMutex(data.SDL.thread.mutex.misc);
-
             data.playback.paused = !data.playback.paused;
 
-            SDL_UnlockMutex(data.SDL.thread.mutex.misc);
+            if (data.playback.paused) {
+                easyav1_stop(data.easyav1);
+            } else {
+                easyav1_play(data.easyav1);
+            }
 
             data.playback.last_change = SDL_GetTicks();
         }
@@ -1467,7 +1299,7 @@ int main(int argc, char **argv)
 
     init_ui();
 
-    if (!init_decoder_thread()) {
+    if (easyav1_play(data.easyav1) != EASYAV1_STATUS_OK) {
         quit_sdl();
         easyav1_destroy(&data.easyav1);
         close_file_stream();
@@ -1494,8 +1326,6 @@ int main(int argc, char **argv)
             break;
         }
 
-        SDL_LockMutex(data.SDL.thread.mutex.seek);
-
         if (easyav1_has_video_track(data.easyav1)) {
 
             const easyav1_video_frame *frame = easyav1_get_video_frame(data.easyav1);
@@ -1519,8 +1349,6 @@ int main(int argc, char **argv)
         draw_time_bar();
         draw_play_pause_animation();
 
-        SDL_UnlockMutex(data.SDL.thread.mutex.seek);
-
         SDL_RenderPresent(data.SDL.renderer);
 
         easyav1_timestamp current_loop_time = SDL_GetTicks();
@@ -1536,12 +1364,12 @@ int main(int argc, char **argv)
             SDL_FlushAudioStream(data.SDL.audio_stream);
 
             if (data.options.loop) {
-                request_seeking(SEEK_TO, 0);
+                easyav1_seek_to_timestamp(data.easyav1, 0);
             }
         }
     }
 
-    exit_decoder_thread();
+    easyav1_stop(data.easyav1);
 
     quit_sdl();
 
