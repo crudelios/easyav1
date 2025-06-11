@@ -1,23 +1,30 @@
 cmake_minimum_required(VERSION 3.26...4.0)
 
+option(EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY "Use external library for dav1d" OFF)
+option(EASYAV1_BUILD_TOOLS "Build the executable tools that use the library" ON)
+
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_SOURCE_DIR}/cmake/")
 
-include("dav1d")
+if (NOT EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY)
+	include("dav1d")
+	set(BUILD_SHARED_LIBS OFF)
+endif()
 
 project("easyav1" C)
 
+if(EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY)
+	find_package(dav1d REQUIRED)
+	add_compile_definitions(EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY)
+endif()
+
 set(CMAKE_C_STANDARD 99)
 
-set(BUILD_SHARED_LIBS OFF)
-
-option(BUILD_TOOLS "Build the executable tools that use the library" ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 #IF(WIN32)
 #	ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS)
 #ENDIF()
-
 
 
 SET(SOURCE_FILES
@@ -58,6 +65,6 @@ if(NOT APPLE AND MATH_LIBRARY)
     target_link_libraries(${PROJECT_NAME} ${MATH_LIBRARY})
 endif()
 
-if (BUILD_TOOLS)
+if (EASYAV1_BUILD_TOOLS)
 	add_subdirectory("tools")
 endif()
