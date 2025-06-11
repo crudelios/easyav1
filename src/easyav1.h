@@ -527,6 +527,39 @@ easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time);
 
 
 /**
+ * @brief Starts playing the video and audio.
+ *
+ * This function will start decoding the video and audio in the background, syncing with the elapsed time.
+ * If the video and audio callbacks are set, they will be called, otherwise you must get video and audio from
+ * `easyav1_get_video_frame` and `easyav1_get_audio_frame` respectively.
+ * 
+ * This function will not block, it will return immediately after starting the decoding process.
+ * 
+ * You must call this function after initializing the easyav1 instance and setting the callbacks.
+ * 
+ * @note This function runs on its own thread, so you must ensure that the callbacks are thread-safe.
+ *
+ * @param easyav1 The easyav1 instance.
+ *
+ * @return `EASYAV1_STATUS_OK` if successful, `EASYAV1_STATUS_ERROR` if there was an error.
+ */
+easyav1_status easyav1_play(easyav1_t *easyav1);
+
+
+/**
+ * @brief Stops the playback of the video and audio.
+ *
+ * This function will stop the decoding process and will not call the video or audio callbacks anymore.
+ * It will also stop the background thread that is decoding the video and audio.
+ * 
+ * You can resume playback by calling `easyav1_play` again.
+ *
+ * @param easyav1 The easyav1 instance.
+ */
+void easyav1_stop(easyav1_t *easyav1);
+
+
+/**
  * @brief Seeks forward by the specified duration.
  *
  * @param easyav1 The easyav1 instance.
@@ -785,56 +818,6 @@ void easyav1_destroy(easyav1_t **easyav1);
 
 #ifdef __cplusplus
 }
-
-
-/**
- * C++ wrapper
- */
-class EasyAV1 {
-    public:
-
-        Easyav1::Easyav1(const char *filename, const easyav1_settings *settings)
-        {
-            this->m_stream = nullptr;
-            this->m_easyav1 = easyav1_init_from_filename(filename, settings);
-        }
-
-        Easyav1::Easyav1(FILE *f, const easyav1_settings *settings)
-        {
-            this->m_stream = nullptr;
-            this->m_easyav1 = easyav1_init_from_file(f, settings);
-        }
-
-        Easyav1::Easyav1(const void *data, size_t size, const easyav1_settings *settings)
-        {
-            this->m_stream = nullptr;
-            this->m_easyav1 = easyav1_init_from_memory(data, size, settings);
-        }
-
-        Easyav1::Easyav1(const easyav1_stream *stream, const easyav1_settings *settings)
-        {
-            this->m_stream = nullptr;
-            this->m_easyav1 = easyav1_init_from_custom_stream(stream, settings);
-        }
-
-        Easyav1::Easyav1(EasyAV1IO &io, const easyav1_settings *settings)
-        {
-            this->m_easyav1 = easyav1_init_from_custom_stream(&stream, settings);
-        }
-
-        ~Easyav1() { easyav1_destroy(&this->m_easyav1); }
-
-        // TODO all remaining functions
-
-        bool has_valid_instance() {
-            return this->m_easyav1 != nullptr;
-        }
-
-    private:
-        easyav1_t *m_easyav1;
-
-        Easyav1::Easyav1() : m_easyav1(nullptr) {}
-};
 #endif
 
 #endif // EASYAV1_H

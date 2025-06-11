@@ -258,6 +258,17 @@ struct easyav1_t {
 
     easyav1_status status;        // The current status of the easyav1 library
 
+
+    /**
+     * The playback structure, used to handle playback from `easyav1_play`
+     */
+    struct {
+        easyav1_bool active;   // Whether playback is active
+
+        pthread_mutex_t mutex; // The playback mutex - used to lock the playback state
+        pthread_t thread;      // The playback thread handle
+    } playback;
+
 };
 
 
@@ -610,7 +621,54 @@ static inline int pthread_cond_signal(pthread_cond_t *const cond)
 #endif // _WIN32
 
 
+/*
+ * Time management functions
+ */
+
 /**
+ * @brief Sleeps for a specified number of milliseconds.
+ * 
+ * @param ms The number of milliseconds to sleep.
+ */
+static inline void easyav1_sleep(unsigned int ms)
+{
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    struct timespec ts = { 0 };
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000;
+    nanosleep(&ts, NULL);
+#endif
+}
+
+
+/**
+ * @brief Returns the number of milliseconds since this function was first called.
+ * 
+ * @return The number of milliseconds since this function was first called (`0`on the first call).
+ */
+static easyav1_timestamp easyav1_get_ticks(void)
+{
+#ifdef _WIN32
+    static easyav1_timestamp start;
+    if (!start) {
+        start = GetTickCount64();
+    }
+    return GetTickCount64() - start;
+#else
+    static struct timespec start;
+    struct timespec now;
+    if (start.tv_sec == 0 && start.tv_nsec == 0) {
+        clock_gettime(CLOCK_MONOTONIC, &start);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+#endif
+}
+
+
+/*
  * I/O functions
  */
 
@@ -2638,6 +2696,109 @@ easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
 
 
 /**
+ * High-level decoding functions
+ */
+
+ /**
+  * @brief The thread function that handles video playback.
+  * 
+  * @param arg The easyav1 instance.
+  * @return Always returns `NULL`.
+  */
+static void *easyav1_playback_thread(void *arg)
+{
+    easyav1_t *easyav1 = (easyav1_t *) arg;
+
+    easyav1_timestamp last_timestamp = easyav1_get_ticks();
+    easyav1_timestamp current_timestamp = last_timestamp;
+
+    pthread_mutex_lock(&easyav1->playback.mutex);
+
+    while (easyav1->playback.active == EASYAV1_TRUE &&
+        easyav1_decode_for(easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
+
+        pthread_mutex_unlock(&easyav1->playback.mutex);
+
+        // Prevent busy waiting
+        if (current_timestamp == last_timestamp) {
+            easyav1_sleep(1);
+        }
+
+        // Update timestamp
+        last_timestamp = current_timestamp;
+        current_timestamp = easyav1_get_ticks();
+
+        pthread_mutex_lock(&easyav1->playback.mutex);
+    }
+
+    pthread_mutex_unlock(&easyav1->playback.mutex);
+
+    return NULL;
+}
+
+easyav1_status easyav1_play(easyav1_t *easyav1)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+        return EASYAV1_STATUS_FINISHED;
+    }
+
+    if (easyav1->playback.active == EASYAV1_TRUE) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Playback is already active.");
+        return EASYAV1_STATUS_OK;
+    }
+
+    if (pthread_mutex_init(&easyav1->playback.mutex, NULL)) {
+        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to initialize playback mutex.");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    easyav1->playback.active = EASYAV1_TRUE;
+
+    if (pthread_create(&easyav1->playback.thread, NULL, easyav1_playback_thread, easyav1)) {
+        log(EASYAV1_LOG_LEVEL_ERROR, "Failed to create playback thread.");
+        easyav1->playback.active = EASYAV1_FALSE;
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    return EASYAV1_STATUS_OK;
+}
+
+void easyav1_stop(easyav1_t *easyav1)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
+        return;
+    }
+
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        return;
+    }
+
+    if (easyav1->playback.active == EASYAV1_FALSE) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Playback is not active.");
+        return;
+    }
+
+    pthread_mutex_lock(&easyav1->playback.mutex);
+    easyav1->playback.active = EASYAV1_FALSE;
+    pthread_mutex_unlock(&easyav1->playback.mutex);
+
+    pthread_join(easyav1->playback.thread, NULL);
+
+    pthread_mutex_destroy(&easyav1->playback.mutex);
+}
+
+
+/**
  * Seeking functions
  */
 
@@ -2680,23 +2841,33 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
+
+    easyav1_status status = easyav1->status;
+    easyav1_timestamp position = easyav1->position;
+    easyav1_timestamp duration = easyav1_get_duration(easyav1);
+
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
+
+    if (EASYAV1_STATUS_IS_ERROR(status)) {
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (timestamp == easyav1->position) {
+    if (timestamp == position) {
         return EASYAV1_STATUS_OK;
     }
 
-    easyav1_timestamp duration = easyav1_get_duration(easyav1);
-
-    if (duration && timestamp >= easyav1_get_duration(easyav1)) {
+    if (duration && timestamp >= duration) {
         log(EASYAV1_LOG_LEVEL_INFO, "Requested timestamp is beyond the end of the stream.");
         timestamp = duration;
 
-        if (easyav1->status == EASYAV1_STATUS_FINISHED) {
+        if (status == EASYAV1_STATUS_FINISHED) {
             return EASYAV1_STATUS_OK;
         }
+    }
+
+    if (easyav1->playback.active == EASYAV1_TRUE) {
+        pthread_mutex_lock(&easyav1->playback.mutex);
     }
 
     easyav1_timestamp original_timestamp = easyav1->position;
@@ -2739,6 +2910,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         if (nestegg_track_seek(easyav1->webm.context, track, ms_to_internal_timestmap(easyav1, corrected_timestamp))) {
             LOG_AND_SET_ERROR(EASYAV1_STATUS_IO_ERROR, "Failed to seek to requested timestamp %u.", easyav1->position);
             resume_video_decoder_thread(easyav1);
+
+            if (easyav1->playback.active == EASYAV1_TRUE) {
+                pthread_mutex_unlock(&easyav1->playback.mutex);
+            }
+
             return EASYAV1_STATUS_ERROR;
         }
 
@@ -2790,6 +2966,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
             if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
                 resume_video_decoder_thread(easyav1);
+
+                if (easyav1->playback.active == EASYAV1_TRUE) {
+                    pthread_mutex_unlock(&easyav1->playback.mutex);
+                }
+
                 return EASYAV1_STATUS_ERROR;
             }
 
@@ -2832,6 +3013,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                             "Unable to seek, no sequence header or keyframes found. Aborting.");
                         release_packet_from_queue(easyav1, packet);
                         resume_video_decoder_thread(easyav1);
+
+                        if (easyav1->playback.active == EASYAV1_TRUE) {
+                            pthread_mutex_unlock(&easyav1->playback.mutex);
+                        }
+
                         return EASYAV1_STATUS_ERROR;
                     }
 
@@ -2860,6 +3046,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                 if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
                     resume_video_decoder_thread(easyav1);
                 }
+
+                if (easyav1->playback.active == EASYAV1_TRUE) {
+                    pthread_mutex_unlock(&easyav1->playback.mutex);
+                }
+
                 log(EASYAV1_LOG_LEVEL_ERROR, "Failed to decode packet when seeking.");
                 return EASYAV1_STATUS_ERROR;
             }
@@ -2889,6 +3080,10 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
     log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->position,
         original_timestamp);
+
+    if (easyav1->playback.active == EASYAV1_TRUE) {
+        pthread_mutex_unlock(&easyav1->playback.mutex);
+    }
 
     return EASYAV1_STATUS_OK;
 }

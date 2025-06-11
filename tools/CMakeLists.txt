@@ -13,6 +13,13 @@ else()
 		${SDL3_INCLUDE_DIR}
 	)
 	target_link_libraries("${PROJECT_NAME}_player" "${PROJECT_NAME}" ${SDL3_LIBRARY})
+
+	add_executable("${PROJECT_NAME}_player_simple" "easyav1_player_simple.c")
+	target_include_directories(${PROJECT_NAME} PUBLIC
+		"src"
+		${SDL3_INCLUDE_DIR}
+	)
+	target_link_libraries("${PROJECT_NAME}_player_simple" "${PROJECT_NAME}" ${SDL3_LIBRARY})
 endif()
 
 add_executable("${PROJECT_NAME}_benchmark" "easyav1_benchmark.c")
