@@ -27,12 +27,19 @@ if(POLICY CMP0025)
     cmake_policy(SET CMP0025 NEW)
 endif()
 
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ext/dav1d/meson.build")
+    set(DAV1D_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ext/dav1d")
+    message(STATUS "dav1d sources found at ${DAV1D_DIR}")
+else()
+    message(FATAL_ERROR "dav1d sources not found. Aborting.")
+endif()
+
 
 # API version
 
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/dav1d/version.h" DAV1D_API_VERSION_MAJOR_LINE REGEX "^#define[ \t]+DAV1D_API_VERSION_MAJOR[ \t]+[0-9]+$")
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/dav1d/version.h" DAV1D_API_VERSION_MINOR_LINE REGEX "^#define[ \t]+DAV1D_API_VERSION_MINOR[ \t]+[0-9]+$")
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/dav1d/version.h" DAV1D_API_VERSION_PATCH_LINE REGEX "^#define[ \t]+DAV1D_API_VERSION_PATCH[ \t]+[0-9]+$")
+file(STRINGS "${DAV1D_DIR}/include/dav1d/version.h" DAV1D_API_VERSION_MAJOR_LINE REGEX "^#define[ \t]+DAV1D_API_VERSION_MAJOR[ \t]+[0-9]+$")
+file(STRINGS "${DAV1D_DIR}/include/dav1d/version.h" DAV1D_API_VERSION_MINOR_LINE REGEX "^#define[ \t]+DAV1D_API_VERSION_MINOR[ \t]+[0-9]+$")
+file(STRINGS "${DAV1D_DIR}/include/dav1d/version.h" DAV1D_API_VERSION_PATCH_LINE REGEX "^#define[ \t]+DAV1D_API_VERSION_PATCH[ \t]+[0-9]+$")
 string(REGEX REPLACE "^#define[ \t]+DAV1D_API_VERSION_MAJOR[ \t]+([0-9]+)$" "\\1" DAV1D_API_VERSION_MAJOR "${DAV1D_API_VERSION_MAJOR_LINE}")
 string(REGEX REPLACE "^#define[ \t]+DAV1D_API_VERSION_MINOR[ \t]+([0-9]+)$" "\\1" DAV1D_API_VERSION_MINOR "${DAV1D_API_VERSION_MINOR_LINE}")
 string(REGEX REPLACE "^#define[ \t]+DAV1D_API_VERSION_PATCH[ \t]+([0-9]+)$" "\\1" DAV1D_API_VERSION_PATCH "${DAV1D_API_VERSION_PATCH_LINE}")
@@ -380,10 +387,10 @@ if(WIN32)
     endif()
 
     # On Windows, we use a compatibility layer to emulate pthread
-    add_library(thread_compat_dep STATIC ${CMAKE_CURRENT_SOURCE_DIR}/src/win32/thread.c)
+    add_library(thread_compat_dep STATIC ${DAV1D_DIR}/src/win32/thread.c)
     target_include_directories(thread_compat_dep PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${DAV1D_DIR}
+        ${DAV1D_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}
     )
     set(THREAD_DEPENDENCY thread_compat_dep)
@@ -459,14 +466,14 @@ if(NOT HAS_STDATOMIC)
     if(MSVC)
         # we have a custom replacement for MSVC
         add_library(stdatomic_dependency INTERFACE)
-        target_include_directories(stdatomic_dependency INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include/compat/msvc)
+        target_include_directories(stdatomic_dependency INTERFACE ${DAV1D_DIR}/include/compat/msvc)
     else()
         try_compile(_GCC_STYLE_ATOMICS SOURCE_FROM_CONTENT "atomics-test.c" "int main() { int v = 0; return __atomic_fetch_add(&v, 1, __ATOMIC_SEQ_CST); return 0; }"
             COMPILE_DEFINITIONS ${TEMP_COMPILE_DEFS}
         )
         if(_GCC_STYLE_ATOMICS)
             add_library(stdatomic_dependency INTERFACE)
-            target_include_directories(stdatomic_dependency INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include/compat/gcc)
+            target_include_directories(stdatomic_dependency INTERFACE ${DAV1D_DIR}/include/compat/gcc)
         else()
             message(FATAL_ERROR "Atomics not supported")
         endif()
@@ -496,9 +503,9 @@ set(CMAKE_REQUIRED_DEFINITIONS ${TEMP_COMPILE_DEFS})
 check_symbol_exists(getopt_long "getopt.h" HAS_GETOPT_LONG)
 
 if(NOT HAS_GETOPT_LONG)
-    add_library(getopt_dependency STATIC ${CMAKE_CURRENT_SOURCE_DIR}/tools/compat/getopt.c)
+    add_library(getopt_dependency STATIC ${DAV1D_DIR}/tools/compat/getopt.c)
     set_property(TARGET getopt_dependency PROPERTY POSITION_INDEPENDENT_CODE ON)
-    target_include_directories(getopt_dependency PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include/compat)
+    target_include_directories(getopt_dependency PUBLIC ${DAV1D_DIR}/include/compat)
 endif()
 
 if(
@@ -688,7 +695,7 @@ if(HAVE_ASM AND (ARCH_ARM OR ARCH_AARCH64))
 
         file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gas-preprocessor.bat" CONTENT "@ECHO OFF\n\n\"@PERL@\" \"@GASPP@\" -as-type armasm -arch @PROCESSOR@ -- \"@CMAKE_ASM_MARMASM_COMPILER@\" -nologo %* >NUL" ESCAPE_QUOTES @ONLY)
         set(CMAKE_ASM_MARMASM_COMPILER "${CMAKE_CURRENT_BINARY_DIR}/gas-preprocessor.bat")
-        set(CMAKE_ASM_MARMASM_FLAGS " -I${CMAKE_CURRENT_SOURCE_DIR}/src/asm -I${CMAKE_CURRENT_BINARY_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/src/asm/arm ${CMAKE_ASM_MARMASM_FLAGS}")
+        set(CMAKE_ASM_MARMASM_FLAGS " -I${DAV1D_DIR}/src/asm -I${CMAKE_CURRENT_BINARY_DIR} -I${DAV1D_DIR}/src/asm/arm ${CMAKE_ASM_MARMASM_FLAGS}")
 
     endif()
 
@@ -920,7 +927,7 @@ endif()
 generate_configuration_file("config.h" C)
 
 # Revision file (vcs_version.h) generation
-set(DAV1D_GIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+set(DAV1D_GIT_DIR "${DAV1D_DIR}/.git")
 
 find_package(Git)
 
@@ -938,55 +945,55 @@ if(NOT VCS_TAG)
 endif()
 
 message(STATUS "Git revision: ${VCS_TAG}")
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/include/vcs_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/vcs_version.h)
+configure_file(${DAV1D_DIR}/include/vcs_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/vcs_version.h)
 unset(VCS_TAG)
 
 # libdav1d source files
 set(LIBDAV1D_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cdf.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpu.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/ctx.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/data.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/decode.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/dequant_tables.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/getbits.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/intra_edge.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/itx_1d.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/lf_mask.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/lib.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/log.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/msac.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/obu.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/pal.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/picture.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/qm.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/ref.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/refmvs.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/scan.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/tables.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/thread_task.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/warpmv.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/wedge.c
+    ${DAV1D_DIR}/src/cdf.c
+    ${DAV1D_DIR}/src/cpu.c
+    ${DAV1D_DIR}/src/ctx.c
+    ${DAV1D_DIR}/src/data.c
+    ${DAV1D_DIR}/src/decode.c
+    ${DAV1D_DIR}/src/dequant_tables.c
+    ${DAV1D_DIR}/src/getbits.c
+    ${DAV1D_DIR}/src/intra_edge.c
+    ${DAV1D_DIR}/src/itx_1d.c
+    ${DAV1D_DIR}/src/lf_mask.c
+    ${DAV1D_DIR}/src/lib.c
+    ${DAV1D_DIR}/src/log.c
+    ${DAV1D_DIR}/src/mem.c
+    ${DAV1D_DIR}/src/msac.c
+    ${DAV1D_DIR}/src/obu.c
+    ${DAV1D_DIR}/src/pal.c
+    ${DAV1D_DIR}/src/picture.c
+    ${DAV1D_DIR}/src/qm.c
+    ${DAV1D_DIR}/src/ref.c
+    ${DAV1D_DIR}/src/refmvs.c
+    ${DAV1D_DIR}/src/scan.c
+    ${DAV1D_DIR}/src/tables.c
+    ${DAV1D_DIR}/src/thread_task.c
+    ${DAV1D_DIR}/src/warpmv.c
+    ${DAV1D_DIR}/src/wedge.c
 )
 
 # libdav1d bitdepth source files
 # These files are compiled for each bitdepth with
 # `BITDEPTH` defined to the currently built bitdepth.
 set(LIBDAV1D_TMPL_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cdef_apply_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cdef_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/fg_apply_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/filmgrain_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/ipred_prepare_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/ipred_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/itx_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/lf_apply_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/loopfilter_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/looprestoration_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/lr_apply_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/mc_tmpl.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/recon_tmpl.c
+    ${DAV1D_DIR}/src/cdef_apply_tmpl.c
+    ${DAV1D_DIR}/src/cdef_tmpl.c
+    ${DAV1D_DIR}/src/fg_apply_tmpl.c
+    ${DAV1D_DIR}/src/filmgrain_tmpl.c
+    ${DAV1D_DIR}/src/ipred_prepare_tmpl.c
+    ${DAV1D_DIR}/src/ipred_tmpl.c
+    ${DAV1D_DIR}/src/itx_tmpl.c
+    ${DAV1D_DIR}/src/lf_apply_tmpl.c
+    ${DAV1D_DIR}/src/loopfilter_tmpl.c
+    ${DAV1D_DIR}/src/looprestoration_tmpl.c
+    ${DAV1D_DIR}/src/lr_apply_tmpl.c
+    ${DAV1D_DIR}/src/mc_tmpl.c
+    ${DAV1D_DIR}/src/recon_tmpl.c
 )
 
 set(LIBDAV1D_ARCH_TMPL_SOURCES "")
@@ -1000,187 +1007,187 @@ set(ARCH_SPECIFIC_FLAGS "")
 
 if(HAVE_ASM)
     if(ARCH_ARM OR ARCH_AARCH64)
-        list(APPEND LIBDAV1D_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/cpu.c)
+        list(APPEND LIBDAV1D_SOURCES ${DAV1D_DIR}/src/arm/cpu.c)
 
         if(ARCH_AARCH64)
             list(APPEND LIBDAV1D_SOURCES
                 # itx.S is used for both 8 and 16 bpc.
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/itx.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/looprestoration_common.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/msac.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/refmvs.S
+                ${DAV1D_DIR}/src/arm/64/itx.S
+                ${DAV1D_DIR}/src/arm/64/looprestoration_common.S
+                ${DAV1D_DIR}/src/arm/64/msac.S
+                ${DAV1D_DIR}/src/arm/64/refmvs.S
             )
 
             if(CONFIG_8BPC)
                 list(APPEND LIBDAV1D_SOURCES
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/cdef.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/filmgrain.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/ipred.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/loopfilter.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/looprestoration.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/mc.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/mc_dotprod.S
+                    ${DAV1D_DIR}/src/arm/64/cdef.S
+                    ${DAV1D_DIR}/src/arm/64/filmgrain.S
+                    ${DAV1D_DIR}/src/arm/64/ipred.S
+                    ${DAV1D_DIR}/src/arm/64/loopfilter.S
+                    ${DAV1D_DIR}/src/arm/64/looprestoration.S
+                    ${DAV1D_DIR}/src/arm/64/mc.S
+                    ${DAV1D_DIR}/src/arm/64/mc_dotprod.S
                 )
             endif()
 
             if(CONFIG_16BPC)
                 list(APPEND LIBDAVID_SOURCES
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/cdef16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/filmgrain16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/ipred16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/itx16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/loopfilter16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/looprestoration16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/mc16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/64/mc16_sve.S
+                    ${DAV1D_DIR}/src/arm/64/cdef16.S
+                    ${DAV1D_DIR}/src/arm/64/filmgrain16.S
+                    ${DAV1D_DIR}/src/arm/64/ipred16.S
+                    ${DAV1D_DIR}/src/arm/64/itx16.S
+                    ${DAV1D_DIR}/src/arm/64/loopfilter16.S
+                    ${DAV1D_DIR}/src/arm/64/looprestoration16.S
+                    ${DAV1D_DIR}/src/arm/64/mc16.S
+                    ${DAV1D_DIR}/src/arm/64/mc16_sve.S
                 )
             endif()
         else()
             list(APPEND LIBDAV1D_SOURCES
                 # itx.S is used for both 8 and 16 bpc.
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/itx.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/looprestoration_common.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/msac.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/refmvs.S
+                ${DAV1D_DIR}/src/arm/32/itx.S
+                ${DAV1D_DIR}/src/arm/32/looprestoration_common.S
+                ${DAV1D_DIR}/src/arm/32/msac.S
+                ${DAV1D_DIR}/src/arm/32/refmvs.S
             )
 
             if(CONFIG_8BPC)
                 list(APPEND LIBDAV1D_SOURCES
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/cdef.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/filmgrain.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/ipred.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/loopfilter.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/looprestoration.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/mc.S
+                    ${DAV1D_DIR}/src/arm/32/cdef.S
+                    ${DAV1D_DIR}/src/arm/32/filmgrain.S
+                    ${DAV1D_DIR}/src/arm/32/ipred.S
+                    ${DAV1D_DIR}/src/arm/32/loopfilter.S
+                    ${DAV1D_DIR}/src/arm/32/looprestoration.S
+                    ${DAV1D_DIR}/src/arm/32/mc.S
                 )
             endif()
 
             if(CONFIG_16BPC)
                 list(APPEND LIBDAVID_SOURCES
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/cdef16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/filmgrain16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/ipred16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/itx16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/loopfilter16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/looprestoration16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/arm/32/mc16.S
+                    ${DAV1D_DIR}/src/arm/32/cdef16.S
+                    ${DAV1D_DIR}/src/arm/32/filmgrain16.S
+                    ${DAV1D_DIR}/src/arm/32/ipred16.S
+                    ${DAV1D_DIR}/src/arm/32/itx16.S
+                    ${DAV1D_DIR}/src/arm/32/loopfilter16.S
+                    ${DAV1D_DIR}/src/arm/32/looprestoration16.S
+                    ${DAV1D_DIR}/src/arm/32/mc16.S
                 )
             endif()
         endif()
     elseif(ARCH_X86)
         list(APPEND LIBDAV1D_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cpu.c
+            ${DAV1D_DIR}/src/x86/cpu.c
         )
 
         # NASM source files
         list(APPEND LIBDAV1D_SOURCES_ASM
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cpuid.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/msac.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/pal.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/refmvs.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/itx_avx512.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cdef_avx2.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/itx_avx2.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cdef_sse.asm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/itx_sse.asm
+            ${DAV1D_DIR}/src/x86/cpuid.asm
+            ${DAV1D_DIR}/src/x86/msac.asm
+            ${DAV1D_DIR}/src/x86/pal.asm
+            ${DAV1D_DIR}/src/x86/refmvs.asm
+            ${DAV1D_DIR}/src/x86/itx_avx512.asm
+            ${DAV1D_DIR}/src/x86/cdef_avx2.asm
+            ${DAV1D_DIR}/src/x86/itx_avx2.asm
+            ${DAV1D_DIR}/src/x86/cdef_sse.asm
+            ${DAV1D_DIR}/src/x86/itx_sse.asm
         )
 
         if(CONFIG_8BPC)
             list(APPEND LIBDAV1D_SOURCES_ASM
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cdef_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/filmgrain_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/ipred_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/loopfilter_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/looprestoration_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/mc_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/filmgrain_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/ipred_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/loopfilter_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/looprestoration_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/mc_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/filmgrain_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/ipred_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/loopfilter_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/looprestoration_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/mc_sse.asm
+                ${DAV1D_DIR}/src/x86/cdef_avx512.asm
+                ${DAV1D_DIR}/src/x86/filmgrain_avx512.asm
+                ${DAV1D_DIR}/src/x86/ipred_avx512.asm
+                ${DAV1D_DIR}/src/x86/loopfilter_avx512.asm
+                ${DAV1D_DIR}/src/x86/looprestoration_avx512.asm
+                ${DAV1D_DIR}/src/x86/mc_avx512.asm
+                ${DAV1D_DIR}/src/x86/filmgrain_avx2.asm
+                ${DAV1D_DIR}/src/x86/ipred_avx2.asm
+                ${DAV1D_DIR}/src/x86/loopfilter_avx2.asm
+                ${DAV1D_DIR}/src/x86/looprestoration_avx2.asm
+                ${DAV1D_DIR}/src/x86/mc_avx2.asm
+                ${DAV1D_DIR}/src/x86/filmgrain_sse.asm
+                ${DAV1D_DIR}/src/x86/ipred_sse.asm
+                ${DAV1D_DIR}/src/x86/loopfilter_sse.asm
+                ${DAV1D_DIR}/src/x86/looprestoration_sse.asm
+                ${DAV1D_DIR}/src/x86/mc_sse.asm
             )
         endif()
 
         if(CONFIG_16BPC)
             list(APPEND LIBDAV1D_SOURCES_ASM
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cdef16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/filmgrain16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/ipred16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/itx16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/loopfilter16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/looprestoration16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/mc16_avx512.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cdef16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/filmgrain16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/ipred16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/itx16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/loopfilter16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/looprestoration16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/mc16_avx2.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/cdef16_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/filmgrain16_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/ipred16_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/itx16_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/loopfilter16_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/looprestoration16_sse.asm
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/x86/mc16_sse.asm
+                ${DAV1D_DIR}/src/x86/cdef16_avx512.asm
+                ${DAV1D_DIR}/src/x86/filmgrain16_avx512.asm
+                ${DAV1D_DIR}/src/x86/ipred16_avx512.asm
+                ${DAV1D_DIR}/src/x86/itx16_avx512.asm
+                ${DAV1D_DIR}/src/x86/loopfilter16_avx512.asm
+                ${DAV1D_DIR}/src/x86/looprestoration16_avx512.asm
+                ${DAV1D_DIR}/src/x86/mc16_avx512.asm
+                ${DAV1D_DIR}/src/x86/cdef16_avx2.asm
+                ${DAV1D_DIR}/src/x86/filmgrain16_avx2.asm
+                ${DAV1D_DIR}/src/x86/ipred16_avx2.asm
+                ${DAV1D_DIR}/src/x86/itx16_avx2.asm
+                ${DAV1D_DIR}/src/x86/loopfilter16_avx2.asm
+                ${DAV1D_DIR}/src/x86/looprestoration16_avx2.asm
+                ${DAV1D_DIR}/src/x86/mc16_avx2.asm
+                ${DAV1D_DIR}/src/x86/cdef16_sse.asm
+                ${DAV1D_DIR}/src/x86/filmgrain16_sse.asm
+                ${DAV1D_DIR}/src/x86/ipred16_sse.asm
+                ${DAV1D_DIR}/src/x86/itx16_sse.asm
+                ${DAV1D_DIR}/src/x86/loopfilter16_sse.asm
+                ${DAV1D_DIR}/src/x86/looprestoration16_sse.asm
+                ${DAV1D_DIR}/src/x86/mc16_sse.asm
             )
         endif()
     elseif(ARCH_PPC64LE)
         list(APPEND ARCH_SPECIFIC_FLAGS -maltivec -mvsx -DDAV1D_VSX)
         list(APPEND LIBDAV1D_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/ppc/cpu.c
+            ${DAV1D_DIR}/src/ppc/cpu.c
         )
         list(APPEND LIBDAV1D_ARCH_TMPL_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/ppc/cdef_tmpl.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/ppc/looprestoration_tmpl.c
+            ${DAV1D_DIR}/src/ppc/cdef_tmpl.c
+            ${DAV1D_DIR}/src/ppc/looprestoration_tmpl.c
         )
     elseif(ARCH_LOONGARCH)
         list(APPEND LIBDAV1D_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/cpu.c
+            ${DAV1D_DIR}/src/loongarch/cpu.c
         )
         list(APPEND LIBDAV1D_ARCH_TMPL_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/looprestoration_tmpl.c
+            ${DAV1D_DIR}/src/loongarch/looprestoration_tmpl.c
         )
         list(APPEND LIBDAV1D_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/cdef.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/ipred.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/mc.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/loopfilter.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/looprestoration.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/msac.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/refmvs.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/loongarch/itx.S
+            ${DAV1D_DIR}/src/loongarch/cdef.S
+            ${DAV1D_DIR}/src/loongarch/ipred.S
+            ${DAV1D_DIR}/src/loongarch/mc.S
+            ${DAV1D_DIR}/src/loongarch/loopfilter.S
+            ${DAV1D_DIR}/src/loongarch/looprestoration.S
+            ${DAV1D_DIR}/src/loongarch/msac.S
+            ${DAV1D_DIR}/src/loongarch/refmvs.S
+            ${DAV1D_DIR}/src/loongarch/itx.S
         )
     elseif(ARCH_RISCV)
         list(APPEND LIBDAV1D_SOURCES
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/cpu.c
+            ${DAV1D_DIR}/src/riscv/cpu.c
         )
         if(ARCH_RV64)
             list(APPEND LIBDAV1D_SOURCES
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/cpu.S
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/pal.S
+                ${DAV1D_DIR}/src/riscv/64/cpu.S
+                ${DAV1D_DIR}/src/riscv/64/pal.S
             )
 
             if(CONFIG_8BPC)
                 list(APPEND LIBDAV1D_SOURCES
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/cdef.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/ipred.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/itx.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/mc.S
+                    ${DAV1D_DIR}/src/riscv/64/cdef.S
+                    ${DAV1D_DIR}/src/riscv/64/ipred.S
+                    ${DAV1D_DIR}/src/riscv/64/itx.S
+                    ${DAV1D_DIR}/src/riscv/64/mc.S
                 )
             endif()
 
             if(CONFIG_16BPC)
                 list(APPEND LIBDAVID_SOURCES
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/cdef16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/ipred16.S
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/riscv/64/mc16.S
+                    ${DAV1D_DIR}/src/riscv/64/cdef16.S
+                    ${DAV1D_DIR}/src/riscv/64/ipred16.S
+                    ${DAV1D_DIR}/src/riscv/64/mc16.S
                 )
             endif()
         endif()
@@ -1201,7 +1208,7 @@ if(WIN32)
         set(API_VERSION_MINOR "${DAV1D_API_VERSION_MINOR}")
         set(API_VERSION_REVISION "${DAV1D_API_VERSION_PATCH}")
         set(COPYRIGHT_YEARS "2018-2025")
-        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/dav1d.rc.in ${CMAKE_CURRENT_BINARY_DIR}/dav1d.rc)
+        configure_file(${DAV1D_DIR}/src/dav1d.rc.in ${CMAKE_CURRENT_BINARY_DIR}/dav1d.rc)
         list(APPEND LIBDAV1D_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/dav1d.rc)
         list(APPEND API_EXPORT_DEFS DAV1D_BUILDING_DLL)
     endif()
@@ -1216,16 +1223,16 @@ endif()
 #
 
 set(LIBDAV1D_INCLUDE_DIRS_PRIV
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/dav1d
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${DAV1D_DIR}
+    ${DAV1D_DIR}/include/dav1d
+    ${DAV1D_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}/include/dav1d
 )
 set(LIBDAV1D_INCLUDE_DIRS
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${DAV1D_DIR}/include
     ${CMAKE_CURRENT_BINARY_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/dav1d
+    ${DAV1D_DIR}/include/dav1d
     ${CMAKE_CURRENT_BINARY_DIR}/include/dav1d
 )
 
@@ -1312,7 +1319,7 @@ endif()
 #    target_include_directories(dav1d_exe PRIVATE
 #        ${LIBDAV1D_INCLUDE_DIRS_PRIV}
 #        ${LIBDAV1D_INCLUDE_DIRS}
-#        ${CMAKE_CURRENT_SOURCE_DIR}/dav1d/tools
+#        ${DAV1D_DIR}/dav1d/tools
 #    )
 #    target_link_libraries(dav1d_exe dav1d)
 #    set_target_properties(dav1d_exe PROPERTIES OUTPUT_NAME "dav1d")

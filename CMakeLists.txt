@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.26...4.0)
 
-set(PROJECT_NAME "easyav1")
-project(${PROJECT_NAME} C)
+set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_SOURCE_DIR}/cmake/")
+
+include("dav1d")
+
+project("easyav1" C)
 
 set(CMAKE_C_STANDARD 99)
 
@@ -15,9 +18,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 #	ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS)
 #ENDIF()
 
-set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_SOURCE_DIR}/cmake/")
 
-add_subdirectory("ext/dav1d")
 
 SET(SOURCE_FILES
 	"src/easyav1.c"
