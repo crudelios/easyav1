@@ -81,9 +81,11 @@ To build easyAV1, you generally need:
 - A working compiler
 - A working assembler
 - CMake
-- SDL2 (for `easyav1_player`)
+- SDL3 (for `easyav1_player`)
 
 If you're building for ARM64 on windows using Visual Studio, you'll also need Perl.
+
+If using Windows, place the SDL3 libraries (either the MSVC or the MinGW dev libraries that you can get from SDL's release page) inside `ext/SDL3`. That will be enough for CMake to detect the library.
 
 Then run:
 
@@ -93,7 +95,7 @@ $ cmake ..
 $ make
 ```
 
-This should create `libeasyav1.a`/`easyav1.lib`, as well as the executables `easyav1_player` and `easyav1_benchmark`.
+This should create `libeasyav1.a`/`easyav1.lib`, as well as the executables `tools/easyav1_player` and `tools/easyav1_benchmark`.
 
 
 ## I want to test it! Got any videos?
