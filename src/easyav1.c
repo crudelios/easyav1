@@ -2841,6 +2841,11 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         return EASYAV1_STATUS_ERROR;
     }
 
+    if (easyav1->seek != NOT_SEEKING) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Trying to seek while already seeking.");
+        return EASYAV1_STATUS_OK;
+    }
+
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
 
     easyav1_status status = easyav1->status;
@@ -3124,6 +3129,10 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
+    if (easyav1->seek != NOT_SEEKING) {
+        return EASYAV1_FALSE;
+    }
+
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
 
     Dav1dPicture *pic = get_oldest_video_frame_from_queue(easyav1);
@@ -3362,6 +3371,10 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
         return NULL;
     }
 
+    if (easyav1->seek != NOT_SEEKING) {
+        return NULL;
+    }
+
     // Remove the old picture being displayed if it exists
     if (easyav1->video.picture.frame_hdr) {
         dav1d_picture_unref(&easyav1->video.picture);
@@ -3438,6 +3451,10 @@ easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
+    if (easyav1->seek != NOT_SEEKING) {
+        return EASYAV1_FALSE;
+    }
+
     return easyav1->audio.has_samples_in_buffer && easyav1->audio.frame.samples == AUDIO_BUFFER_SIZE ?
         EASYAV1_TRUE : EASYAV1_FALSE;
 }
@@ -3449,7 +3466,7 @@ const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1)
         return NULL;
     }
 
-    if (!easyav1->audio.has_samples_in_buffer) {
+    if (easyav1->seek != NOT_SEEKING || !easyav1->audio.has_samples_in_buffer) {
         return NULL;
     }
 
