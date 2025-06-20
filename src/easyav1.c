@@ -74,10 +74,11 @@ typedef enum {
  */
 typedef enum {
     NOT_SEEKING = 0,            // Not seeking
-    SEEKING_FOR_SQHDR = 1,      // Seeking for sequence header
-    SEEKING_FOR_KEYFRAME = 2,   // Seeking for keyframe
-    SEEKING_FOUND_KEYFRAME = 3, // Found keyframe, waiting for packets
-    SEEKING_FOR_TIMESTAMP = 4   // Seeking for the requested timestamp
+    STARTING_SEEKING = 1,       // Starting seeking
+    SEEKING_FOR_SQHDR = 2,      // Seeking for sequence header
+    SEEKING_FOR_KEYFRAME = 3,   // Seeking for keyframe
+    SEEKING_FOUND_KEYFRAME = 4, // Found keyframe, waiting for packets
+    SEEKING_FOR_TIMESTAMP = 5   // Seeking for the requested timestamp
 } seeking_mode;
 
 
@@ -99,6 +100,7 @@ typedef struct {
     easyav1_bool is_keyframe;    // Whether the current packet is a keyframe
     easyav1_packet_type type;    // The type of the packet (video or audio)
     easyav1_bool decoded;        // Whether the packet has been decoded
+    easyav1_bool is_seek_packet; // Whether the packet is a seek packet
 } easyav1_packet;
 
 
@@ -150,6 +152,7 @@ struct easyav1_t {
 
         uint64_t processed_frames;  // The number of frames processed by the decoder
 
+        easyav1_video_frame frame; // The current video frame data and metadata
 
         /**
          * The video frame queue - used to store the video frames in a queue, to be processed later
@@ -161,7 +164,6 @@ struct easyav1_t {
             size_t begin;        // The index of the first item in the queue
         } frame_queue;
 
-        easyav1_video_frame frame; // The current video frame data and metadata
 
         /**
          * The video decoder thread - used to store the video decoder thread data and metadata
@@ -248,15 +250,14 @@ struct easyav1_t {
         stream_type type; // The type of stram in use
     } stream;
 
-    easyav1_settings settings;    // The easyav1 settings data
 
-    easyav1_timestamp position;   // The current position of the stream, in ms
-    easyav1_timestamp duration;   // The total duration of the stream, in ms
-    easyav1_timestamp time_scale; // The time scale conversion from the internal packet timestamp to ms
-
-    seeking_mode seek;            // The current seeking mode of the stream
-
-    easyav1_status status;        // The current status of the easyav1 library
+    /**
+     * The seeking structure - used to handle seeking in the stream
+     */
+    struct {
+        seeking_mode mode;           // The current seeking mode
+        easyav1_timestamp timestamp; // The timestamp to seek to, in ms
+    } seek;
 
 
     /**
@@ -268,6 +269,14 @@ struct easyav1_t {
         pthread_mutex_t mutex; // The playback mutex - used to lock the playback state
         pthread_t thread;      // The playback thread handle
     } playback;
+
+    easyav1_status status;        // The current status of the easyav1 library
+
+    easyav1_settings settings;    // The easyav1 settings data
+
+    easyav1_timestamp position;   // The current position of the stream, in ms
+    easyav1_timestamp duration;   // The total duration of the stream, in ms
+    easyav1_timestamp time_scale; // The time scale conversion from the internal packet timestamp to ms
 
 };
 
@@ -1928,7 +1937,10 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
         return NULL;
     }
 
-    if (type == PACKET_TYPE_VIDEO && (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP)) {
+    easyav1_bool should_lock_thread = easyav1->seek.mode == NOT_SEEKING || easyav1->seek.mode == SEEKING_FOR_TIMESTAMP ?
+        EASYAV1_TRUE : EASYAV1_FALSE;
+
+    if (type == PACKET_TYPE_VIDEO && should_lock_thread) {
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
     }
 
@@ -1936,7 +1948,7 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
         &easyav1->packets.video_queue : &easyav1->packets.audio_queue);
 
     if (!new_packet) {
-        if (type == PACKET_TYPE_VIDEO && (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP)) {
+        if (type == PACKET_TYPE_VIDEO && should_lock_thread) {
             pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
         }
         nestegg_free_packet(packet);
@@ -1948,8 +1960,9 @@ static easyav1_packet *prepare_new_packet(easyav1_t *easyav1)
     new_packet->timestamp = packet_timestamp;
     new_packet->is_keyframe = has_keyframe == NESTEGG_PACKET_HAS_KEYFRAME_TRUE ? EASYAV1_TRUE : EASYAV1_FALSE;
     new_packet->type = type;
+    new_packet->is_seek_packet = easyav1->seek.mode != NOT_SEEKING && packet_timestamp <= easyav1->seek.timestamp;
 
-    if (type == PACKET_TYPE_VIDEO && (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP)) {
+    if (type == PACKET_TYPE_VIDEO && should_lock_thread) {
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
         pthread_cond_signal(&easyav1->video.decoder_thread.conditions.has_packets);
     }
@@ -1980,7 +1993,7 @@ static inline easyav1_bool must_fetch_one_packet(easyav1_t *easyav1)
 static easyav1_bool must_fetch_video_packets(easyav1_t *easyav1)
 {
     if (easyav1->video.active == EASYAV1_FALSE ||
-        (easyav1->seek != NOT_SEEKING && easyav1->seek != SEEKING_FOR_TIMESTAMP)) {
+        (easyav1->seek.mode != NOT_SEEKING && easyav1->seek.mode != SEEKING_FOR_TIMESTAMP)) {
         return EASYAV1_FALSE;
     }
 
@@ -2255,6 +2268,10 @@ static void *video_decoder_thread(void *arg)
 
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
 
+        if (packet->is_seek_packet == EASYAV1_TRUE) {
+            dequeue_video_frame(easyav1);
+        }
+
         enqueue_video_frame(easyav1, &pic);
 
         packet->decoded = EASYAV1_TRUE;
@@ -2281,7 +2298,7 @@ static easyav1_status seek_sequence_header(easyav1_t *easyav1, easyav1_packet *p
     }
 
     if (result == 0) {
-        easyav1->seek = SEEKING_FOR_KEYFRAME;
+        easyav1->seek.mode = SEEKING_FOR_KEYFRAME;
     }
 
     return EASYAV1_STATUS_OK;
@@ -2379,7 +2396,7 @@ static easyav1_status decode_audio(easyav1_t *easyav1, easyav1_packet *packet, u
         easyav1->audio.frame.samples = 0;
     }
 
-    if (easyav1->seek != NOT_SEEKING) {
+    if (easyav1->seek.mode != NOT_SEEKING) {
         if (vorbis_synthesis_trackonly(&easyav1->audio.vorbis.block, &audio_packet) ||
             vorbis_synthesis_blockin(&easyav1->audio.vorbis.dsp, &easyav1->audio.vorbis.block)) {
             LOG_AND_SET_ERROR(EASYAV1_STATUS_DECODER_ERROR, "Failed to process audio packet.");
@@ -2500,7 +2517,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
     }
 
     // Decoding video: use multithreaded decoder
-    if (easyav1->seek == NOT_SEEKING || easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+    if (easyav1->seek.mode == NOT_SEEKING || easyav1->seek.mode == SEEKING_FOR_TIMESTAMP) {
 
         pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
 
@@ -2536,7 +2553,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
     }
 
     // Seeking, do not decode video frames
-    if (easyav1->seek == SEEKING_FOR_SQHDR) {
+    if (easyav1->seek.mode == SEEKING_FOR_SQHDR) {
         easyav1_status status = send_packet_data_to_decoder(easyav1, packet, seek_sequence_header);
 
         if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
@@ -2544,8 +2561,8 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
         }
     }
 
-    if (easyav1->seek == SEEKING_FOR_KEYFRAME && packet->is_keyframe == EASYAV1_TRUE) {
-        easyav1->seek = SEEKING_FOUND_KEYFRAME;
+    if (easyav1->seek.mode == SEEKING_FOR_KEYFRAME && packet->is_keyframe == EASYAV1_TRUE) {
+        easyav1->seek.mode = SEEKING_FOUND_KEYFRAME;
     }
 
     return EASYAV1_STATUS_OK;
@@ -2560,6 +2577,11 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
 
     if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
         return EASYAV1_STATUS_ERROR;
+    }
+
+    if (easyav1->seek.mode != NOT_SEEKING) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Cannot decode while seeking.");
+        return EASYAV1_STATUS_OK;
     }
 
     easyav1_packet *packet = get_next_packet(easyav1);
@@ -2615,6 +2637,11 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
     }
 
     if (timestamp <= easyav1->position) {
+        return EASYAV1_STATUS_OK;
+    }
+
+    if (easyav1->seek.mode != NOT_SEEKING) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Cannot decode while seeking.");
         return EASYAV1_STATUS_OK;
     }
 
@@ -2841,7 +2868,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (easyav1->seek != NOT_SEEKING) {
+    if (easyav1->seek.mode != NOT_SEEKING) {
         log(EASYAV1_LOG_LEVEL_INFO, "Trying to seek while already seeking.");
         return EASYAV1_STATUS_OK;
     }
@@ -2871,8 +2898,10 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         }
     }
 
-    if (easyav1->playback.active == EASYAV1_TRUE) {
-        pthread_mutex_lock(&easyav1->playback.mutex);
+    easyav1_bool is_playing = easyav1->playback.active;
+
+    if (is_playing == EASYAV1_TRUE) {
+        easyav1_stop(easyav1);
     }
 
     easyav1_timestamp original_timestamp = easyav1->position;
@@ -2900,6 +2929,7 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
 
+    easyav1->seek.mode = STARTING_SEEKING;
     easyav1->status = EASYAV1_STATUS_OK;
 
     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
@@ -2935,6 +2965,8 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
 
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
 
+        easyav1->seek.timestamp = timestamp;
+
         if (easyav1->video.active == EASYAV1_TRUE) {
 
             pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
@@ -2944,12 +2976,12 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
             pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
 
             dav1d_flush(easyav1->video.context);
-            easyav1->seek = SEEKING_FOR_SQHDR;
+            easyav1->seek.mode = SEEKING_FOR_SQHDR;
         }
 
         if (audio_is_active) {
-            if (easyav1->seek == NOT_SEEKING) {
-                easyav1->seek = SEEKING_FOR_TIMESTAMP;
+            if (easyav1->seek.mode == STARTING_SEEKING) {
+                easyav1->seek.mode = SEEKING_FOR_TIMESTAMP;
 
                 // No need for a second pass for audio only
                 pass = 1;
@@ -2993,15 +3025,15 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                         // If fast seeking is enabled, we don't decode until we find the correct timestamp, rather we
                         // resume playing immediately after we get to the last keyframe before the requested timestamp
                         if (easyav1->settings.use_fast_seeking == EASYAV1_TRUE) {
-                            easyav1->seek = NOT_SEEKING;
+                            easyav1->seek.mode = NOT_SEEKING;
                             resume_video_decoder_thread(easyav1);
                             break;
-                        } else if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
-                            easyav1->seek = SEEKING_FOR_TIMESTAMP;
+                        } else if (easyav1->seek.mode != SEEKING_FOR_TIMESTAMP) {
+                            easyav1->seek.mode = SEEKING_FOR_TIMESTAMP;
                             resume_video_decoder_thread(easyav1);
                         }
-                    } else if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
-                        easyav1->seek = SEEKING_FOUND_KEYFRAME;
+                    } else if (easyav1->seek.mode == SEEKING_FOR_TIMESTAMP) {
+                        easyav1->seek.mode = SEEKING_FOUND_KEYFRAME;
                     }
                 }
             }
@@ -3031,24 +3063,24 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                     pass = -1;
                 }
 
-                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                if (easyav1->seek.mode == SEEKING_FOR_TIMESTAMP) {
                     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
                 }
 
                 easyav1->position = timestamp;
 
-                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                if (easyav1->seek.mode == SEEKING_FOR_TIMESTAMP) {
                     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
                 }
 
-                easyav1->seek = NOT_SEEKING;
+                easyav1->seek.mode = STARTING_SEEKING;
                 break;
             }
 
-            seeking_mode last_seek_mode = easyav1->seek;
+            seeking_mode last_seek_mode = easyav1->seek.mode;
 
             if (decode_packet(easyav1, packet) == EASYAV1_STATUS_ERROR) {
-                if (easyav1->seek != SEEKING_FOR_TIMESTAMP) {
+                if (easyav1->seek.mode != SEEKING_FOR_TIMESTAMP) {
                     resume_video_decoder_thread(easyav1);
                 }
 
@@ -3060,34 +3092,37 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
                 return EASYAV1_STATUS_ERROR;
             }
 
-            if (pass == 0 && easyav1->seek == SEEKING_FOUND_KEYFRAME) {
+            if (pass == 0 && easyav1->seek.mode == SEEKING_FOUND_KEYFRAME) {
                 last_keyframe_timestamp = packet->timestamp;
-                easyav1->seek = SEEKING_FOR_KEYFRAME;
+                easyav1->seek.mode = SEEKING_FOR_KEYFRAME;
             }
 
             // If we found a sequence header, we may need to decode the video frame from this packet.
             // To do that, we need to keep the packet so it's fetched again and properly decoded.
-            if (pass == 0 || (pass == 1 && (last_seek_mode != SEEKING_FOR_SQHDR || last_seek_mode == easyav1->seek ||
-                packet->timestamp < last_keyframe_timestamp))) {
+            if (pass == 0 || (pass == 1 && (last_seek_mode != SEEKING_FOR_SQHDR ||
+                last_seek_mode == easyav1->seek.mode || packet->timestamp < last_keyframe_timestamp))) {
 
-                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                if (easyav1->seek.mode == SEEKING_FOR_TIMESTAMP) {
                     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
                 }
 
                 release_packet_from_queue(easyav1, packet);
 
-                if (easyav1->seek == SEEKING_FOR_TIMESTAMP) {
+                if (easyav1->seek.mode == SEEKING_FOR_TIMESTAMP) {
                     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
                 }
             }
         }
     }
 
+    easyav1->seek.timestamp = 0;
+    easyav1->seek.mode = NOT_SEEKING;
+
     log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->position,
         original_timestamp);
 
-    if (easyav1->playback.active == EASYAV1_TRUE) {
-        pthread_mutex_unlock(&easyav1->playback.mutex);
+    if (is_playing == EASYAV1_TRUE) {
+        easyav1_play(easyav1);
     }
 
     return EASYAV1_STATUS_OK;
@@ -3129,7 +3164,7 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    if (easyav1->seek != NOT_SEEKING) {
+    if (easyav1->seek.mode != NOT_SEEKING) {
         return EASYAV1_FALSE;
     }
 
@@ -3371,7 +3406,7 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
         return NULL;
     }
 
-    if (easyav1->seek != NOT_SEEKING) {
+    if (easyav1->seek.mode != NOT_SEEKING) {
         return NULL;
     }
 
@@ -3451,7 +3486,7 @@ easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
-    if (easyav1->seek != NOT_SEEKING) {
+    if (easyav1->seek.mode != NOT_SEEKING) {
         return EASYAV1_FALSE;
     }
 
@@ -3466,7 +3501,7 @@ const easyav1_audio_frame *easyav1_get_audio_frame(easyav1_t *easyav1)
         return NULL;
     }
 
-    if (easyav1->seek != NOT_SEEKING || !easyav1->audio.has_samples_in_buffer) {
+    if (easyav1->seek.mode != NOT_SEEKING || !easyav1->audio.has_samples_in_buffer) {
         return NULL;
     }
 

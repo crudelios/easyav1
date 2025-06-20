@@ -539,6 +539,9 @@ easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time);
  * 
  * @note This function runs on its own thread, so you must ensure that the callbacks are thread-safe.
  *
+ * @note If you wish to seek while playing, you should pause the playback by calling `easyav1_stop` and then call
+ *       `easyav1_seek_to_timestamp` or `easyav1_seek_forward`/`easyav1_seek_backward`.
+ *
  * @param easyav1 The easyav1 instance.
  *
  * @return `EASYAV1_STATUS_OK` if successful, `EASYAV1_STATUS_ERROR` if there was an error.
