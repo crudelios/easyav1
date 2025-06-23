@@ -893,18 +893,22 @@ if(HAVE_ASM AND ARCH_X86)
     # NASM compiler support
     enable_language(ASM_NASM)
 
-    # check NASM version
-    execute_process(COMMAND "${CMAKE_ASM_NASM_COMPILER}" "--version" OUTPUT_VARIABLE NASM_VERSION_FULL)
+    if ("${CMAKE_ASM_NASM_COMPILER}" MATCHES "nasm")
 
-    if("${NASM_VERSION_FULL}" MATCHES "^NASM version")
-        string(REPLACE " " ";" NASM_VERSION_FULL "${NASM_VERSION_FULL}")
-        list(GET NASM_VERSION_FULL 2 NASM_VERSION)
+        # check NASM version
+        execute_process(COMMAND "${CMAKE_ASM_NASM_COMPILER}" "--version" OUTPUT_VARIABLE NASM_VERSION_FULL)
 
-        if(${NASM_VERSION} VERSION_LESS "2.14")
-            message(FATAL_ERROR "nasm 2.14 or later is required, found nasm ${NASM_VERSION}")
+        if("${NASM_VERSION_FULL}" MATCHES "^NASM version")
+            string(REPLACE " " ";" NASM_VERSION_FULL "${NASM_VERSION_FULL}")
+            list(GET NASM_VERSION_FULL 2 NASM_VERSION)
+
+            if(${NASM_VERSION} VERSION_LESS "2.14")
+                message(FATAL_ERROR "nasm 2.14 or later is required, found nasm ${NASM_VERSION}")
+            endif()
+        else()
+            message(FATAL_ERROR "unexpected nasm version string: ${NASM_VERSION_FULL}")
         endif()
-    else()
-        message(FATAL_ERROR "unexpected nasm version string: ${NASM_VERSION_FULL}")
+
     endif()
 
     # Generate config.asm

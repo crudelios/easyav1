@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.26...4.0)
 
 option(EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY "Use external library for dav1d" OFF)
 option(EASYAV1_BUILD_TOOLS "Build the executable tools that use the library" ON)
+option(EASYAV1_USE_SANITIZERS "Use sanitizers on easyav1" ON)
+
 
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_SOURCE_DIR}/cmake/")
 
@@ -45,9 +47,15 @@ if(NOT WIN32)
 	set(THREADS_DEPENDENCY Threads::Threads)
 
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-		add_compile_options("-fsanitize=thread,undefined")
+		# Enable sanitizers for Debug builds
+		if (EASYAV1_USE_SANITIZERS)
+			message(STATUS "Using sanitizers for Debug build")
+			add_compile_options("-fsanitize=thread,undefined")
+			add_link_options("-fsanitize=thread,undefined")
+		else()
+   			message(STATUS "Not using sanitizers for Debug build")
+		endif()
 		add_compile_options("-g3")
-		add_link_options("-fsanitize=thread,undefined")
 		add_link_options("-g3")
 	endif()
 endif()
