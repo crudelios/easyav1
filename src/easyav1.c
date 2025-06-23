@@ -2655,8 +2655,18 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         easyav1_bool use_fast_seeking = easyav1->settings.use_fast_seeking;
         easyav1->settings.use_fast_seeking = EASYAV1_TRUE;
 
+        easyav1_bool was_playing = easyav1->playback.active;
+
+        if (was_playing) {
+            pthread_mutex_unlock(&easyav1->playback.mutex);
+        }
+
         // Use fast seeking to prevent constantly seeking to the next seek point
         easyav1_seek_to_timestamp(easyav1, timestamp);
+
+        if (was_playing) {
+            pthread_mutex_lock(&easyav1->playback.mutex);
+        }
 
         easyav1->settings.use_fast_seeking = use_fast_seeking;
     }
