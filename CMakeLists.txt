@@ -1,9 +1,10 @@
-cmake_minimum_required(VERSION 3.26...4.0)
+cmake_minimum_required(VERSION 3.8.0...4.0)
 
 option(EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY "Use external library for dav1d" OFF)
 option(EASYAV1_BUILD_TOOLS "Build the executable tools that use the library" ON)
 option(EASYAV1_USE_SANITIZERS "Use sanitizers on easyav1" ON)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_SOURCE_DIR}/cmake/")
 

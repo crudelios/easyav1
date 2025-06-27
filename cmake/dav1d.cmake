@@ -11,7 +11,7 @@
 # Both the original script and the original TargetArch.cmake are licensed under the BSD-2-Clause license.
 # My modifications to this file and to TargetArch.cmake are licensed under the same BSD-2-Clause license.
 
-cmake_minimum_required(VERSION 3.8.0...4.0.0)
+cmake_minimum_required(VERSION 3.25.0...4.0.0)
 
 set(CMAKE_C_STANDARD 99)
 
@@ -679,7 +679,9 @@ add_to_configure_file("config.h" "ARCH_ARM" TYPE_BOOLEAN)
 if(HAVE_ASM AND (ARCH_ARM OR ARCH_AARCH64))
     if (NOT MSVC)
         enable_language(ASM)
-    else ()
+    elseif (${CMAKE_VERISON} VERSION_LESS "3.26.0")
+        message(FATAL_ERROR "CMake version 3.26.0 or later is required for ARM assembly support with MSVC.")
+    else()
         set (CMAKE_ASM_MARMASM_SOURCE_FILE_EXTENSIONS "S")
         find_program(PERL name "perl" HINTS ENV PATH)
         if (NOT PERL)
@@ -890,6 +892,19 @@ endif()
 # ASM specific stuff
 #
 if(HAVE_ASM AND ARCH_X86)
+
+    # Check if NASM is available
+    # Android NDK provides Yasm, so we try to manually find NASM
+    if (DEFINED ANDROID_ABI)
+        find_program(NASM_ASSEMBLER "nasm" HINTS ENV PATH)
+        if (NOT NASM_ASSEMBLER)
+            message(FATAL_ERROR "nasm not found. Please install it or disable assembly.")
+        else()
+            set(CMAKE_ASM_NASM_COMPILER "${NASM_ASSEMBLER}")
+            message (STATUS "ASM_NASM compiler: ${NASM_ASSEMBLER}")
+        endif()
+    endif()
+
     # NASM compiler support
     enable_language(ASM_NASM)
 
@@ -1242,7 +1257,7 @@ set(LIBDAV1D_INCLUDE_DIRS
 
 # The final dav1d library
 
-add_library(dav1d ${TEMP_COMPAT_FILES} ${LIBDAV1D_SOURCES} ${LIBDAV1D_SOURCES_ASM})
+add_library(dav1d ${TEMP_COMPAT_FILES} ${LIBDAV1D_SOURCES})
 target_include_directories(dav1d PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
 target_include_directories(dav1d PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
 target_compile_definitions(dav1d PRIVATE ${TEMP_COMPILE_DEFS} ${API_EXPORT_DEFS})
@@ -1262,6 +1277,15 @@ endif()
 if(NOT HAS_STDATOMIC)
     target_link_libraries(dav1d stdatomic_dependency)
 endif()
+
+if (NOT LIBDAV1D_SOURCES_ASM STREQUAL "")
+    add_library(dav1d_asm STATIC  ${LIBDAV1D_SOURCES_ASM})
+    target_include_directories(dav1d_asm PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
+    target_include_directories(dav1d_asm PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
+    set_target_properties(dav1d_asm PROPERTIES LINKER_LANGUAGE C)
+    target_link_libraries(dav1d dav1d_asm)
+endif()
+
 
 # Helper library for each bitdepth (and architecture-specific flags)
 foreach(BITS IN LISTS bitdepths)
@@ -1293,8 +1317,6 @@ foreach(BITS IN LISTS bitdepths)
         endif()
     endif()
 endforeach()
-
-
 
 if(TEMP_LINK_LIBRARIES)
     target_link_directories(dav1d PUBLIC ${TEMP_LINK_LIBRARIES})
