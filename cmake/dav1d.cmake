@@ -1270,7 +1270,7 @@ else()
     set_target_properties(dav1d PROPERTIES PREFIX "lib")
 endif()
 
-if (NOT ("x${CMAKE_DL_LIBS}" STREQUAL "x") AND NOT SWITCH)
+if (NOT ("x${CMAKE_DL_LIBS}" STREQUAL "x") AND NOT NINTENDO_SWITCH)
     target_link_libraries(dav1d ${CMAKE_DL_LIBS})
 endif()
 

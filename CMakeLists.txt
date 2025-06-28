@@ -67,7 +67,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 	"ext"
 )
 
-target_link_libraries(${PROJECT_NAME} dav1d ${THREADS_DEPENDENCY})
+target_link_libraries(${PROJECT_NAME} dav1d::dav1d ${THREADS_DEPENDENCY})
 
 find_library(MATH_LIBRARY m)
 if(NOT APPLE AND MATH_LIBRARY)
