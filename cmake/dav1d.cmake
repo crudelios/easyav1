@@ -69,47 +69,26 @@ set(DAV1D_SONAME_VERSION "${DAV1D_API_VERSION_MAJOR}.${DAV1D_API_VERSION_MINOR}.
 function(target_architecture output_var)
     if(APPLE AND CMAKE_OSX_ARCHITECTURES)
         # On OS X we use CMAKE_OSX_ARCHITECTURES *if* it was set
-        # First let's normalize the order of the values
-
-        # Note that it's not possible to compile PowerPC applications if you are using
-        # the OS X SDK version 10.6 or later - you'll need 10.4/10.5 for that, so we
-        # disable it by default
-        # See this page for more information:
-        # http://stackoverflow.com/questions/5333490/how-can-we-restore-ppc-ppc64-as-well-as-full-10-4-10-5-sdk-support-to-xcode-4
-
-        # Architecture defaults to i386 or ppc on OS X 10.5 and earlier, depending on the CPU type detected at runtime.
-        # On OS X 10.6+ the default is x86_64 if the CPU supports it, i386 otherwise.
 
         foreach(osx_arch ${CMAKE_OSX_ARCHITECTURES})
-            if("${osx_arch}" STREQUAL "ppc" AND ppc_support)
-                set(osx_arch_ppc TRUE)
-            elseif("${osx_arch}" STREQUAL "i386")
-                set(osx_arch_i386 TRUE)
+            if("${osx_arch}" STREQUAL "arm64")
+                set(osx_arch_arm64 TRUE)
             elseif("${osx_arch}" STREQUAL "x86_64")
                 set(osx_arch_x86_64 TRUE)
-            elseif("${osx_arch}" STREQUAL "ppc64" AND ppc_support)
-                set(osx_arch_ppc64 TRUE)
             else()
                 message(FATAL_ERROR "Invalid OS X arch name: ${osx_arch}")
             endif()
         endforeach()
 
         # Now add all the architectures in our normalized order
-        if(osx_arch_ppc)
-            list(APPEND ARCH ppc)
-        endif()
-
-        if(osx_arch_i386)
-            list(APPEND ARCH i386)
+        if(osx_arch_arm64)
+            list(APPEND ARCH aarch64)
         endif()
 
         if(osx_arch_x86_64)
             list(APPEND ARCH x86_64)
         endif()
 
-        if(osx_arch_ppc64)
-            list(APPEND ARCH ppc64)
-        endif()
     else()
 
         # Detect the architecture in a rather creative way...
@@ -205,7 +184,7 @@ function(target_architecture output_var)
 endfunction()
 target_architecture(PROCESSOR)
 
-if(PROCESSOR STREQUAL "i386" OR PROCESSOR STREQUAL "x86_64")
+if("${PROCESSOR}" STREQUAL "i386" OR "${PROCESSOR}" STREQUAL "x86_64")
     set(ARCH_X86 TRUE)
 endif()
 
@@ -288,12 +267,12 @@ option(enable_asm "Build asm files, if available" ON)
 include(CheckSymbolExists)
 
 if (enable_asm)
-    if(${PROCESSOR} STREQUAL "i386" OR ${PROCESSOR} STREQUAL "x86_64" OR
-        ${PROCESSOR} STREQUAL "aarch64" OR ${PROCESSOR} MATCHES "^arm" OR
-        ${PROCESSOR} STREQUAL "ppc64" OR ${PROCESSOR} MATCHES "^riscv" OR ${PROCESSOR} MATCHES "^loongarch")
+    if("${PROCESSOR}" STREQUAL "i386" OR "${PROCESSOR}" STREQUAL "x86_64" OR
+        "${PROCESSOR}" STREQUAL "aarch64" OR "${PROCESSOR}" MATCHES "^arm" OR
+        "${PROCESSOR}" STREQUAL "ppc64" OR "${PROCESSOR}" MATCHES "^riscv" OR "${PROCESSOR}" MATCHES "^loongarch")
         set(HAVE_ASM 1)
     endif()
-    if (HAVE_ASM AND ${PROCESSOR} STREQUAL "x86_64")
+    if (HAVE_ASM AND "${PROCESSOR}" STREQUAL "x86_64")
         check_symbol_exists(__ILP32__ "stdio.h" HAS_IPL32)
         if(HAS_IPL32)
             unset(HAVE_ASM)
@@ -511,11 +490,11 @@ if(NOT HAS_GETOPT_LONG)
 endif()
 
 if(
-    ${PROCESSOR} STREQUAL "aarch64" OR
-    ${PROCESSOR} MATCHES "^arm" OR
-    ${PROCESSOR} STREQUAL "ppc64" OR
-    ${PROCESSOR} MATCHES "^riscv" OR
-    ${PROCESSOR} MATCHES "^loongarch"
+    "${PROCESSOR}" STREQUAL "aarch64" OR
+    "${PROCESSOR}" MATCHES "^arm" OR
+    "${PROCESSOR}" STREQUAL "ppc64" OR
+    "${PROCESSOR}" MATCHES "^riscv" OR
+    "${PROCESSOR}" MATCHES "^loongarch"
 )
     check_symbol_exists(getauxval "sys/auxv.h" HAVE_GETAUXVAL)
     check_symbol_exists(elf_aux_info "sys/auxv.h" HAVE_ELF_AUX_INFO)
@@ -617,7 +596,7 @@ if((${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" 
     list(APPEND OPTIONAL_FLAGS -fno-stack-check)
 endif()
 
-if(${PROCESSOR} STREQUAL "aarch64" OR ${PROCESSOR} MATCHES "^arm")
+if("${PROCESSOR}" STREQUAL "aarch64" OR "${PROCESSOR}" MATCHES "^arm")
     list(APPEND OPTIONAL_FLAGS -fno-align-functions)
 endif()
 
@@ -655,7 +634,7 @@ endif()
 # ASM specific stuff
 #
 
-if(${PROCESSOR} STREQUAL "aarch64")
+if("${PROCESSOR}" STREQUAL "aarch64")
     set(ARCH_AARCH64 1)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gastest.S "
         .text
@@ -663,7 +642,7 @@ if(${PROCESSOR} STREQUAL "aarch64")
         movi v0.16b, #100
         mov MYVAR, #100
         .unreq MYVAR")
-elseif(${PROCESSOR} MATCHES "^arm")
+elseif("${PROCESSOR}" MATCHES "^arm")
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gastest.S "
         .text
         .fpu neon
@@ -847,7 +826,7 @@ add_to_configure_file("config.h" "ARCH_X86" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "ARCH_X86_64" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "ARCH_X86_32" TYPE_BOOLEAN)
 
-if(${PROCESSOR} STREQUAL "ppc64")
+if("${PROCESSOR}" STREQUAL "ppc64")
     set(ARCH_PPC64LE 1)
 endif()
 
@@ -855,9 +834,9 @@ add_to_configure_file("config.h" "ARCH_PPC64LE" TYPE_BOOLEAN)
 
 # TODO - The following will always evaluate to false
 
-if(${PROCESSOR} MATCHES "^riscv")
+if("${PROCESSOR}" MATCHES "^riscv")
     set(ARCH_RISCV 1)
-    if(${PROCESSOR} STREQUAL "riscv64")
+    if("${PROCESSOR}" STREQUAL "riscv64")
         set(ARCH_RV64 1)
     else()
         set(ARCH_RV32 1)
@@ -868,9 +847,9 @@ add_to_configure_file("config.h" "ARCH_RISCV" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "ARCH_RV32" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "ARCH_RV64" TYPE_BOOLEAN)
 
-if(${PROCESSOR} MATCHES "^loongarch")
+if("${PROCESSOR}" MATCHES "^loongarch")
     set(ARCH_LOONGARCH 1)
-    if(${PROCESSOR} STREQUAL "loongarch64")
+    if("${PROCESSOR}" STREQUAL "loongarch64")
         set(ARCH_LOONGARCH64 1)
     else()
         set(ARCH_LOONGARCH32 1)
@@ -885,7 +864,7 @@ add_to_configure_file("config.h" "ARCH_LOONGARCH64" TYPE_BOOLEAN)
 # https://mesonbuild.com/Release-notes-for-0-37-0.html#new-compiler-function-symbols_have_underscore_prefix
 # For example, Windows 32-bit prefixes underscore, but 64-bit does not.
 # Linux does not prefix an underscore but OS X does.
-if((WIN32 AND ${PROCESSOR} STREQUAL "i386") OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "tvOS")
+if((WIN32 AND "${PROCESSOR}" STREQUAL "i386") OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "tvOS")
     add_to_configure_file("config.h" "PREFIX" "1" TYPE_BOOLEAN)
     add_to_configure_file("config.asm" "PREFIX" "1" TYPE_BOOLEAN)
 endif()
