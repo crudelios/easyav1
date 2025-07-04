@@ -184,7 +184,7 @@ function(target_architecture output_var)
 endfunction()
 target_architecture(PROCESSOR)
 
-if("${PROCESSOR}" STREQUAL "i386" OR "${PROCESSOR}" STREQUAL "x86_64")
+if("${PROCESSOR}" STREQUAL "i386" OR "${PROCESSOR}" MATCHES "x86_64")
     set(ARCH_X86 TRUE)
 endif()
 
@@ -196,17 +196,33 @@ function(add_to_configure_file)
     endif()
     set(CONFIG_NAME "${ARGV0}")
     set(VARIABLE "${ARGV1}")
-    if (ARGC LESS 4)
-        set(VALUE "${${ARGV1}}")
+    if ("${ARGV2}" STREQUAL "TYPE_BOOLEAN")
         set(TYPE "${ARGV2}")
+        set(VALUE "${${ARGV1}}")
+        if (ARGC EQUAL 4)
+            set(CONDITION "${ARGV3}")
+            message(STATUS "add_to_configure_file: adding ${VARIABLE} to ${CONFIG_NAME} with condition ${CONDITION} and value ${VALUE}")
+        else()
+            set(CONDITION "")
+        endif() 
     else()
-        set(VALUE "${ARGV2}")
-        set(TYPE "${ARGV3}")
+        if (ARGC LESS 4)
+            set(VALUE "${${ARGV1}}")
+            set(TYPE "${ARGV2}")
+        else()
+            set(VALUE "${ARGV2}")
+            set(TYPE "${ARGV3}")
+        endif()
     endif()
+
 
 	if (TYPE STREQUAL "TYPE_BOOLEAN")
 		if (${VALUE})
-			set("${CONFIG_NAME}" "${${CONFIG_NAME}}#define ${VARIABLE} 1\n" PARENT_SCOPE)
+            if (NOT ${CONDITION} STREQUAL "")
+                set("${CONFIG_NAME}" "${${CONFIG_NAME}}#if ${CONDITION}\n#define ${VARIABLE} 1\n#else\n#define ${VARIABLE} 0\n#endif\n" PARENT_SCOPE)
+            else()
+			    set("${CONFIG_NAME}" "${${CONFIG_NAME}}#define ${VARIABLE} 1\n" PARENT_SCOPE)
+            endif()
 		else()
 			set("${CONFIG_NAME}" "${${CONFIG_NAME}}#define ${VARIABLE} 0\n" PARENT_SCOPE)
 		endif()
@@ -267,12 +283,12 @@ option(enable_asm "Build asm files, if available" ON)
 include(CheckSymbolExists)
 
 if (enable_asm)
-    if("${PROCESSOR}" STREQUAL "i386" OR "${PROCESSOR}" STREQUAL "x86_64" OR
-        "${PROCESSOR}" STREQUAL "aarch64" OR "${PROCESSOR}" MATCHES "^arm" OR
+    if("${PROCESSOR}" STREQUAL "i386" OR "${PROCESSOR}" MATCHES "x86_64" OR
+        "${PROCESSOR}" MATCHES "aarch64" OR "${PROCESSOR}" MATCHES "^arm" OR
         "${PROCESSOR}" STREQUAL "ppc64" OR "${PROCESSOR}" MATCHES "^riscv" OR "${PROCESSOR}" MATCHES "^loongarch")
         set(HAVE_ASM 1)
     endif()
-    if (HAVE_ASM AND "${PROCESSOR}" STREQUAL "x86_64")
+    if (HAVE_ASM AND "${PROCESSOR}" MATCHES "x86_64")
         check_symbol_exists(__ILP32__ "stdio.h" HAS_IPL32)
         if(HAS_IPL32)
             unset(HAVE_ASM)
@@ -355,7 +371,7 @@ if(WIN32)
         add_to_configure_file("config.h" "ftello" "_ftelli64" TYPE_EXPRESSION)
     endif()
 
-    if (${PROCESSOR} STREQUAL "x86_64" AND NOT MSVC)
+    if (${PROCESSOR} MATCHES "x86_64" AND NOT MSVC)
         list(APPEND TEMP_COMPILE_FLAGS "-Wl,--dynamicbase,--nxcompat,--tsaware,--high-entropy-va")
     elseif(${PROCESSOR} STREQUAL "i386" OR ${PROCESSOR} MATCHES "^arm")
         if (MSVC)
@@ -490,7 +506,7 @@ if(NOT HAS_GETOPT_LONG)
 endif()
 
 if(
-    "${PROCESSOR}" STREQUAL "aarch64" OR
+    "${PROCESSOR}" MATCHES "aarch64" OR
     "${PROCESSOR}" MATCHES "^arm" OR
     "${PROCESSOR}" STREQUAL "ppc64" OR
     "${PROCESSOR}" MATCHES "^riscv" OR
@@ -596,7 +612,7 @@ if((${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" 
     list(APPEND OPTIONAL_FLAGS -fno-stack-check)
 endif()
 
-if("${PROCESSOR}" STREQUAL "aarch64" OR "${PROCESSOR}" MATCHES "^arm")
+if("${PROCESSOR}" MATCHES "aarch64" OR "${PROCESSOR}" MATCHES "^arm")
     list(APPEND OPTIONAL_FLAGS -fno-align-functions)
 endif()
 
@@ -621,7 +637,7 @@ add_to_configure_file("config.h" "ENDIANNESS_BIG" TYPE_BOOLEAN)
 if(ARCH_X86)
     if("${stack_alignment}" GREATER 0)
         set(STACK_ALIGNMENT ${stack_alignment})
-    elseif(${PROCESSOR} STREQUAL "x86_64" OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "Linux" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "tvOS")
+    elseif("${PROCESSOR}" MATCHES "x86_64" OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "Linux" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "tvOS")
         set(STACK_ALIGNMENT 16)
     else()
         set(STACK_ALIGNMENT 4)
@@ -634,7 +650,7 @@ endif()
 # ASM specific stuff
 #
 
-if("${PROCESSOR}" STREQUAL "aarch64")
+if("${PROCESSOR}" MATCHES "aarch64")
     set(ARCH_AARCH64 1)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gastest.S "
         .text
@@ -654,7 +670,7 @@ elseif("${PROCESSOR}" MATCHES "^arm")
     set(ARCH_ARM 1)
 endif()
 
-add_to_configure_file("config.h" "ARCH_AARCH64" TYPE_BOOLEAN)
+add_to_configure_file("config.h" "ARCH_AARCH64" TYPE_BOOLEAN "__aarch64__")
 add_to_configure_file("config.h" "ARCH_ARM" TYPE_BOOLEAN)
 
 if(HAVE_ASM AND (ARCH_ARM OR ARCH_AARCH64))
@@ -806,7 +822,7 @@ if (AS_ARCH_LEVEL)
 endif()
 
 if(ARCH_X86)
-    if(${PROCESSOR} STREQUAL "x86_64")
+    if("${PROCESSOR}" MATCHES "x86_64")
         set(ARCH_X86_64 1)
     else()
         set(ARCH_X86_32 1)
@@ -822,8 +838,8 @@ if(ARCH_X86)
     add_to_configure_file("config.asm" "FORCE_VEX_ENCODING" TYPE_BOOLEAN)
 endif()
 
-add_to_configure_file("config.h" "ARCH_X86" TYPE_BOOLEAN)
-add_to_configure_file("config.h" "ARCH_X86_64" TYPE_BOOLEAN)
+add_to_configure_file("config.h" "ARCH_X86" TYPE_BOOLEAN "__x86_64__ || __i386__")
+add_to_configure_file("config.h" "ARCH_X86_64" TYPE_BOOLEAN "__x86_64__")
 add_to_configure_file("config.h" "ARCH_X86_32" TYPE_BOOLEAN)
 
 if("${PROCESSOR}" STREQUAL "ppc64")
