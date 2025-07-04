@@ -201,7 +201,6 @@ function(add_to_configure_file)
         set(VALUE "${${ARGV1}}")
         if (ARGC EQUAL 4)
             set(CONDITION "${ARGV3}")
-            message(STATUS "add_to_configure_file: adding ${VARIABLE} to ${CONFIG_NAME} with condition ${CONDITION} and value ${VALUE}")
         else()
             set(CONDITION "")
         endif() 
@@ -670,7 +669,7 @@ elseif("${PROCESSOR}" MATCHES "^arm")
     set(ARCH_ARM 1)
 endif()
 
-add_to_configure_file("config.h" "ARCH_AARCH64" TYPE_BOOLEAN "__aarch64__")
+add_to_configure_file("config.h" "ARCH_AARCH64" TYPE_BOOLEAN "defined(__aarch64__)")
 add_to_configure_file("config.h" "ARCH_ARM" TYPE_BOOLEAN)
 
 if(HAVE_ASM AND (ARCH_ARM OR ARCH_AARCH64))
@@ -838,8 +837,8 @@ if(ARCH_X86)
     add_to_configure_file("config.asm" "FORCE_VEX_ENCODING" TYPE_BOOLEAN)
 endif()
 
-add_to_configure_file("config.h" "ARCH_X86" TYPE_BOOLEAN "__x86_64__ || __i386__")
-add_to_configure_file("config.h" "ARCH_X86_64" TYPE_BOOLEAN "__x86_64__")
+add_to_configure_file("config.h" "ARCH_X86" TYPE_BOOLEAN "defined(__x86_64__) || defined(__i386__)")
+add_to_configure_file("config.h" "ARCH_X86_64" TYPE_BOOLEAN "defined(__x86_64__)")
 add_to_configure_file("config.h" "ARCH_X86_32" TYPE_BOOLEAN)
 
 if("${PROCESSOR}" STREQUAL "ppc64")
@@ -1015,18 +1014,21 @@ set(LIBDAV1D_TMPL_SOURCES
 set(LIBDAV1D_ARCH_TMPL_SOURCES "")
 set(LIBDAV1D_BITDEPTH_OBJS "")
 
+# CPU and ASM specific sources (for macOS universal builds)
+set(LIBDAV1D_SOURCES_X86 "")
+set(LIBDAV1D_SOURCES_X86_ASM "")
+set(LIBDAV1D_SOURCES_ARM "")
+set(LIBDAV1D_SOURCES_ARM_ASM "")
 
-# ASM specific sources
-set(LIBDAV1D_SOURCES_ASM "")
 # Arch-specific flags
 set(ARCH_SPECIFIC_FLAGS "")
 
 if(HAVE_ASM)
     if(ARCH_ARM OR ARCH_AARCH64)
-        list(APPEND LIBDAV1D_SOURCES ${DAV1D_DIR}/src/arm/cpu.c)
+        list(APPEND LIBDAV1D_SOURCES_ARM ${DAV1D_DIR}/src/arm/cpu.c)
 
         if(ARCH_AARCH64)
-            list(APPEND LIBDAV1D_SOURCES
+            list(APPEND LIBDAV1D_SOURCES_ARM_ASM
                 # itx.S is used for both 8 and 16 bpc.
                 ${DAV1D_DIR}/src/arm/64/itx.S
                 ${DAV1D_DIR}/src/arm/64/looprestoration_common.S
@@ -1035,7 +1037,7 @@ if(HAVE_ASM)
             )
 
             if(CONFIG_8BPC)
-                list(APPEND LIBDAV1D_SOURCES
+                list(APPEND LIBDAV1D_SOURCES_ARM_ASM
                     ${DAV1D_DIR}/src/arm/64/cdef.S
                     ${DAV1D_DIR}/src/arm/64/filmgrain.S
                     ${DAV1D_DIR}/src/arm/64/ipred.S
@@ -1047,7 +1049,7 @@ if(HAVE_ASM)
             endif()
 
             if(CONFIG_16BPC)
-                list(APPEND LIBDAVID_SOURCES
+                list(APPEND LIBDAV1D_SOURCES_ARM_ASM
                     ${DAV1D_DIR}/src/arm/64/cdef16.S
                     ${DAV1D_DIR}/src/arm/64/filmgrain16.S
                     ${DAV1D_DIR}/src/arm/64/ipred16.S
@@ -1059,7 +1061,7 @@ if(HAVE_ASM)
                 )
             endif()
         else()
-            list(APPEND LIBDAV1D_SOURCES
+            list(APPEND LIBDAV1D_SOURCES_ARM_ASM
                 # itx.S is used for both 8 and 16 bpc.
                 ${DAV1D_DIR}/src/arm/32/itx.S
                 ${DAV1D_DIR}/src/arm/32/looprestoration_common.S
@@ -1068,7 +1070,7 @@ if(HAVE_ASM)
             )
 
             if(CONFIG_8BPC)
-                list(APPEND LIBDAV1D_SOURCES
+                list(APPEND LIBDAV1D_SOURCES_ARM_ASM
                     ${DAV1D_DIR}/src/arm/32/cdef.S
                     ${DAV1D_DIR}/src/arm/32/filmgrain.S
                     ${DAV1D_DIR}/src/arm/32/ipred.S
@@ -1079,7 +1081,7 @@ if(HAVE_ASM)
             endif()
 
             if(CONFIG_16BPC)
-                list(APPEND LIBDAVID_SOURCES
+                list(APPEND LIBDAV1D_SOURCES_ARM_ASM
                     ${DAV1D_DIR}/src/arm/32/cdef16.S
                     ${DAV1D_DIR}/src/arm/32/filmgrain16.S
                     ${DAV1D_DIR}/src/arm/32/ipred16.S
@@ -1090,13 +1092,15 @@ if(HAVE_ASM)
                 )
             endif()
         endif()
-    elseif(ARCH_X86)
-        list(APPEND LIBDAV1D_SOURCES
+    endif()
+
+    if(ARCH_X86)
+        list(APPEND LIBDAV1D_SOURCES_X86
             ${DAV1D_DIR}/src/x86/cpu.c
         )
 
         # NASM source files
-        list(APPEND LIBDAV1D_SOURCES_ASM
+        list(APPEND LIBDAV1D_SOURCES_X86_ASM
             ${DAV1D_DIR}/src/x86/cpuid.asm
             ${DAV1D_DIR}/src/x86/msac.asm
             ${DAV1D_DIR}/src/x86/pal.asm
@@ -1109,7 +1113,7 @@ if(HAVE_ASM)
         )
 
         if(CONFIG_8BPC)
-            list(APPEND LIBDAV1D_SOURCES_ASM
+            list(APPEND LIBDAV1D_SOURCES_X86_ASM
                 ${DAV1D_DIR}/src/x86/cdef_avx512.asm
                 ${DAV1D_DIR}/src/x86/filmgrain_avx512.asm
                 ${DAV1D_DIR}/src/x86/ipred_avx512.asm
@@ -1130,7 +1134,7 @@ if(HAVE_ASM)
         endif()
 
         if(CONFIG_16BPC)
-            list(APPEND LIBDAV1D_SOURCES_ASM
+            list(APPEND LIBDAV1D_SOURCES_X86_ASM
                 ${DAV1D_DIR}/src/x86/cdef16_avx512.asm
                 ${DAV1D_DIR}/src/x86/filmgrain16_avx512.asm
                 ${DAV1D_DIR}/src/x86/ipred16_avx512.asm
@@ -1275,14 +1279,39 @@ if(NOT HAS_STDATOMIC)
     target_link_libraries(dav1d stdatomic_dependency)
 endif()
 
-if (NOT LIBDAV1D_SOURCES_ASM STREQUAL "")
-    add_library(dav1d_asm STATIC  ${LIBDAV1D_SOURCES_ASM})
-    target_include_directories(dav1d_asm PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
-    target_include_directories(dav1d_asm PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
-    set_target_properties(dav1d_asm PROPERTIES LINKER_LANGUAGE C)
-    target_link_libraries(dav1d dav1d_asm)
+
+# This is done separately to support universal builds on macOS
+if (NOT LIBDAV1D_SOURCES_X86 STREQUAL "")
+    add_library(dav1d_x86 STATIC ${LIBDAV1D_SOURCES_X86})
+    target_include_directories(dav1d_x86 PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
+    target_include_directories(dav1d_x86 PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
+    set_target_properties(dav1d_x86 PROPERTIES LINKER_LANGUAGE C OSX_ARCHITECTURES "x86_64")
+    target_link_libraries(dav1d dav1d_x86)
 endif()
 
+if (NOT LIBDAV1D_SOURCES_X86_ASM STREQUAL "")
+    add_library(dav1d_x86_asm STATIC ${LIBDAV1D_SOURCES_X86_ASM})
+    target_include_directories(dav1d_x86_asm PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
+    target_include_directories(dav1d_x86_asm PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
+    set_target_properties(dav1d_x86_asm PROPERTIES LINKER_LANGUAGE C OSX_ARCHITECTURES "x86_64")
+    target_link_libraries(dav1d dav1d_x86_asm)
+endif()
+
+if (NOT LIBDAV1D_SOURCES_ARM STREQUAL "")
+    add_library(dav1d_arm STATIC ${LIBDAV1D_SOURCES_ARM})
+    target_include_directories(dav1d_arm PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
+    target_include_directories(dav1d_arm PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
+    set_target_properties(dav1d_arm PROPERTIES LINKER_LANGUAGE C OSX_ARCHITECTURES "arm64")
+    target_link_libraries(dav1d dav1d_arm)
+endif()
+
+if (NOT LIBDAV1D_SOURCES_ARM_ASM STREQUAL "")
+    add_library(dav1d_arm_asm STATIC ${LIBDAV1D_SOURCES_ARM_ASM})
+    target_include_directories(dav1d_arm_asm PRIVATE ${LIBDAV1D_INCLUDE_DIRS_PRIV})
+    target_include_directories(dav1d_arm_asm PUBLIC ${LIBDAV1D_INCLUDE_DIRS})
+    set_target_properties(dav1d_arm_asm PROPERTIES LINKER_LANGUAGE C OSX_ARCHITECTURES "arm64")
+    target_link_libraries(dav1d dav1d_arm_asm)
+endif()
 
 # Helper library for each bitdepth (and architecture-specific flags)
 foreach(BITS IN LISTS bitdepths)
