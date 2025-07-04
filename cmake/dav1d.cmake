@@ -1172,7 +1172,7 @@ if(HAVE_ASM)
             ${DAV1D_DIR}/src/loongarch/cpu.c
         )
         list(APPEND LIBDAV1D_ARCH_TMPL_SOURCES
-            ${DAV1D_DIR}/src/loongarch/looprestoration_tmpl.c
+            ${DAV1D_DIR}/src/loongarch/looprestoration_inner.c
         )
         list(APPEND LIBDAV1D_SOURCES
             ${DAV1D_DIR}/src/loongarch/cdef.S
