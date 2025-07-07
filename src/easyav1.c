@@ -630,6 +630,20 @@ static inline int pthread_cond_signal(pthread_cond_t *const cond)
 #endif // _WIN32
 
 
+#ifdef __SWITCH__
+
+#include <unistd.h>
+
+// Hack to make sysconf work on Switch
+// This is a workaround for the fact that sysconf is not implemented in the Switch SDK.
+long sysconf(int value)
+{
+    return (value == _SC_NPROCESSORS_ONLN) ? 3 : -1;
+}
+
+#endif // __SWITCH__
+
+
 /*
  * Time management functions
  */
