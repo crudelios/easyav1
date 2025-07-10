@@ -1205,6 +1205,15 @@ static easyav1_status send_packet_data_to_decoder(easyav1_t *easyav1, easyav1_pa
 static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet);
 
 /**
+ * @brief Decodes packets until the given timestamp is reached.
+ *
+ * @param easyav1 The easyav1 context to decode packets for.
+ * @param timestamp The timestamp to decode packets until.
+ * @return easyav1_status `EASYAV1_STATUS_OK` on success, `EASYAV1_STATUS_ERROR` on error.
+ */
+static easyav1_status do_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp);
+
+/**
  * @brief Gets the closest cue point before the given timestamp.
  *
  * @param easyav1 The easyav1 context to get the cue point for.
@@ -1213,6 +1222,19 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet);
  * @return The closest cue point to the given timestamp. If there are no cue points, `0` is returned.
  */
 static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1_timestamp timestamp);
+
+/**
+ * @brief Seeks to the given timestamp in the WebM file.
+ *
+ * This function seeks to the closest cue point before the given timestamp and then seeks to the exact timestamp.
+ * If the timestamp is before the first cue point, it seeks to the beginning of the file.
+ *
+ * @param easyav1 The easyav1 context to seek in.
+ * @param timestamp The timestamp to seek to.
+ *
+ * @return `EASYAV1_STATUS_OK` on success, `EASYAV1_STATUS_ERROR` on error.
+ */
+static easyav1_status do_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp);
 
 /**
  * @brief Changes the current video or audio track to the given track ID.
@@ -2598,6 +2620,11 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
         return EASYAV1_STATUS_OK;
     }
 
+    if (easyav1->playback.active == EASYAV1_TRUE) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Cannot manually decode when using playback functions.");
+        return EASYAV1_STATUS_OK;
+    }
+
     easyav1_packet *packet = get_next_packet(easyav1);
 
     if (easyav1->status == EASYAV1_STATUS_FINISHED) {
@@ -2635,13 +2662,8 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
     return status;
 }
 
-easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
+static easyav1_status do_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
-    if (!easyav1) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return EASYAV1_STATUS_ERROR;
-    }
-
     if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
         return EASYAV1_STATUS_ERROR;
     }
@@ -2669,20 +2691,14 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
         easyav1_bool use_fast_seeking = easyav1->settings.use_fast_seeking;
         easyav1->settings.use_fast_seeking = EASYAV1_TRUE;
 
-        easyav1_bool was_playing = easyav1->playback.active;
-
-        if (was_playing) {
-            pthread_mutex_unlock(&easyav1->playback.mutex);
-        }
-
         // Use fast seeking to prevent constantly seeking to the next seek point
-        easyav1_seek_to_timestamp(easyav1, timestamp);
-
-        if (was_playing) {
-            pthread_mutex_lock(&easyav1->playback.mutex);
-        }
+        easyav1_status status = do_seek_to_timestamp(easyav1, timestamp);
 
         easyav1->settings.use_fast_seeking = use_fast_seeking;
+
+        if (EASYAV1_STATUS_IS_ERROR(status)) {
+            return EASYAV1_STATUS_ERROR;
+        }
     }
 
     easyav1_status status = easyav1->status;
@@ -2740,6 +2756,21 @@ easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timest
     return status;
 }
 
+easyav1_status easyav1_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (easyav1->playback.active == EASYAV1_TRUE) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Cannot manually decode when using playback functions.");
+        return EASYAV1_STATUS_OK;
+    }
+
+    return do_decode_until(easyav1, timestamp);
+}
+
 easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time)
 {
     return easyav1_decode_until(easyav1, easyav1->position + time);
@@ -2766,7 +2797,7 @@ static void *easyav1_playback_thread(void *arg)
     pthread_mutex_lock(&easyav1->playback.mutex);
 
     while (easyav1->playback.active == EASYAV1_TRUE &&
-        easyav1_decode_for(easyav1, current_timestamp - last_timestamp) != EASYAV1_STATUS_ERROR) {
+        do_decode_until(easyav1, easyav1->position + (current_timestamp - last_timestamp)) != EASYAV1_STATUS_ERROR) {
 
         pthread_mutex_unlock(&easyav1->playback.mutex);
 
@@ -2885,18 +2916,8 @@ static easyav1_timestamp get_closest_cue_point(const easyav1_t *easyav1, easyav1
     return closest;
 }
 
-easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
+static easyav1_status do_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
-    if (!easyav1) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
-        return EASYAV1_STATUS_ERROR;
-    }
-
-    if (easyav1->seek.mode != NOT_SEEKING) {
-        log(EASYAV1_LOG_LEVEL_INFO, "Trying to seek while already seeking.");
-        return EASYAV1_STATUS_OK;
-    }
-
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
 
     easyav1_status status = easyav1->status;
@@ -2920,12 +2941,6 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
         if (status == EASYAV1_STATUS_FINISHED) {
             return EASYAV1_STATUS_OK;
         }
-    }
-
-    easyav1_bool is_playing = easyav1->playback.active;
-
-    if (is_playing == EASYAV1_TRUE) {
-        easyav1_stop(easyav1);
     }
 
     easyav1_timestamp original_timestamp = easyav1->position;
@@ -3145,11 +3160,34 @@ easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp t
     log(EASYAV1_LOG_LEVEL_INFO, "Seeked to timestamp %llu from timestamp %llu.", easyav1->position,
         original_timestamp);
 
+    return EASYAV1_STATUS_OK;
+}
+
+easyav1_status easyav1_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp timestamp)
+{
+    if (!easyav1) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Handle is NULL");
+        return EASYAV1_STATUS_ERROR;
+    }
+
+    if (easyav1->seek.mode != NOT_SEEKING) {
+        log(EASYAV1_LOG_LEVEL_INFO, "Trying to seek while already seeking.");
+        return EASYAV1_STATUS_OK;
+    }
+
+    easyav1_bool is_playing = easyav1->playback.active;
+
+    if (is_playing == EASYAV1_TRUE) {
+        easyav1_stop(easyav1);
+    }
+
+    easyav1_status status = do_seek_to_timestamp(easyav1, timestamp);
+
     if (is_playing == EASYAV1_TRUE) {
         easyav1_play(easyav1);
     }
 
-    return EASYAV1_STATUS_OK;
+    return status;
 }
 
 easyav1_status easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time)
