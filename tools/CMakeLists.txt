@@ -20,3 +20,9 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 	"src"
 )
 target_link_libraries("${PROJECT_NAME}_benchmark" "${PROJECT_NAME}")
+
+add_executable("${PROJECT_NAME}_test" "test.c")
+target_include_directories(${PROJECT_NAME} PUBLIC
+	"src"
+)
+target_link_libraries("${PROJECT_NAME}_test" "${PROJECT_NAME}")
