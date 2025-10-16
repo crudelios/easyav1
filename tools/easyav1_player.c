@@ -468,20 +468,20 @@ static int init_window(void)
 static int must_create_new_texture(const easyav1_video_frame *frame)
 {
     return data.SDL.textures.video == NULL ||
-        data.video_frame.width != frame->width || data.video_frame.height != frame->height ||
-        data.video_frame.bits_per_color != frame->bits_per_color ||
-        data.video_frame.color_space != frame->color_space ||
-        data.video_frame.color_primaries != frame->color_primaries ||
-        data.video_frame.transfer_characteristics != frame->transfer_characteristics ||
-        data.video_frame.matrix_coefficients != frame->matrix_coefficients ||
-        data.video_frame.chroma_sample_position != frame->chroma_sample_position;
+        data.video_frame.width != frame->properties.width || data.video_frame.height != frame->properties.height ||
+        data.video_frame.bits_per_color != frame->properties.bits_per_color ||
+        data.video_frame.color_space != frame->properties.color_space ||
+        data.video_frame.color_primaries != frame->properties.color_primaries ||
+        data.video_frame.transfer_characteristics != frame->properties.transfer_characteristics ||
+        data.video_frame.matrix_coefficients != frame->properties.matrix_coefficients ||
+        data.video_frame.chroma_sample_position != frame->properties.chroma_sample_position;
 }
 
 static SDL_Colorspace generate_colorspace_from_frame(const easyav1_video_frame *frame)
 {
     SDL_ColorPrimaries color_primaries;
 
-    switch (frame->color_primaries) {
+    switch (frame->properties.color_primaries) {
         case EASYAV1_COLOR_PRIMARIES_BT709:
             color_primaries = SDL_COLOR_PRIMARIES_BT709;
             break;
@@ -525,7 +525,7 @@ static SDL_Colorspace generate_colorspace_from_frame(const easyav1_video_frame *
 
     SDL_TransferCharacteristics transfer_characteristics;
 
-    switch (frame->transfer_characteristics) {
+    switch (frame->properties.transfer_characteristics) {
         case EASYAV1_TRANSFER_CHARACTERISTICS_BT709:
             transfer_characteristics = SDL_TRANSFER_CHARACTERISTICS_BT709;
             break;
@@ -584,7 +584,7 @@ static SDL_Colorspace generate_colorspace_from_frame(const easyav1_video_frame *
 
     SDL_MatrixCoefficients matrix_coefficients;
 
-    switch (frame->matrix_coefficients) {
+    switch (frame->properties.matrix_coefficients) {
         case EASYAV1_MATRIX_COEFFICIENTS_IDENTITY:
             matrix_coefficients = SDL_MATRIX_COEFFICIENTS_IDENTITY;
             break;
@@ -631,7 +631,7 @@ static SDL_Colorspace generate_colorspace_from_frame(const easyav1_video_frame *
 
     SDL_ColorRange color_range;
 
-    switch (frame->color_space) {
+    switch (frame->properties.color_space) {
         case EASYAV1_COLOR_SPACE_LIMITED:
             color_range = SDL_COLOR_RANGE_LIMITED;
             break;
@@ -645,7 +645,7 @@ static SDL_Colorspace generate_colorspace_from_frame(const easyav1_video_frame *
 
     SDL_ChromaLocation chroma_location;
 
-    switch (frame->chroma_sample_position) {
+    switch (frame->properties.chroma_sample_position) {
         case EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED:
             chroma_location = SDL_CHROMA_LOCATION_TOPLEFT;
             break;
@@ -671,8 +671,8 @@ static void create_texture_for_video_frame(const easyav1_video_frame *frame)
         if (texture_properties) {
             SDL_Colorspace colorspace = generate_colorspace_from_frame(frame);
 
-            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame->width);
-            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame->height);
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame->properties.width);
+            SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame->properties.height);
             SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_IYUV);
             SDL_SetNumberProperty(texture_properties, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER,
                 SDL_TEXTUREACCESS_STREAMING);
@@ -683,7 +683,7 @@ static void create_texture_for_video_frame(const easyav1_video_frame *frame)
             SDL_DestroyProperties(texture_properties);
         } else {
             data.SDL.textures.video = SDL_CreateTexture(data.SDL.renderer, SDL_PIXELFORMAT_IYUV,
-                SDL_TEXTUREACCESS_STREAMING, frame->width, frame->height);
+                SDL_TEXTUREACCESS_STREAMING, frame->properties.width, frame->properties.height);
         }
 
         if (!data.SDL.textures.video) {
@@ -691,8 +691,8 @@ static void create_texture_for_video_frame(const easyav1_video_frame *frame)
             return;
         }
 
-        data.video_frame.width = frame->width;
-        data.video_frame.height = frame->height;
+        data.video_frame.width = frame->properties.width;
+        data.video_frame.height = frame->properties.height;
     }
 }
 

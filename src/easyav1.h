@@ -261,7 +261,7 @@ typedef enum {
     EASYAV1_MATRIX_COEFFICIENTS_UNSPECIFIED = 0,
     EASYAV1_MATRIX_COEFFICIENTS_IDENTITY = 1,
     EASYAV1_MATRIX_COEFFICIENTS_BT709 = 2,
-    EASYAV1_MATRIX_COEFFICIENTS_UNKONWN = 3,
+    EASYAV1_MATRIX_COEFFICIENTS_UNKNOWN = 3,
     EASYAV1_MATRIX_COEFFICIENTS_FCC = 4,
     EASYAV1_MATRIX_COEFFICIENTS_BT470BG = 5,
     EASYAV1_MATRIX_COEFFICIENTS_BT601 = 6,
@@ -286,15 +286,17 @@ typedef enum {
  * Video frame.
  */
 typedef struct {
-    easyav1_pixel_layout pixel_layout;                         // The pixel layout.
-    easyav1_bits_per_color bits_per_color;                     // The bits per color.
-    easyav1_color_space color_space;                           // The color space.
-    easyav1_color_primaries color_primaries;                   // The color primaries.
-    easyav1_transfer_characteristics transfer_characteristics; // The transfer characteristics.
-    easyav1_matrix_coefficients matrix_coefficients;           // The matrix coefficients.
-    easyav1_chroma_sample_position chroma_sample_position;     // The chroma sample position.
-    unsigned int width;                                        // The width of the frame.
-    unsigned int height;                                       // The height of the frame.
+    struct {
+        easyav1_pixel_layout pixel_layout;                         // The pixel layout.
+        easyav1_bits_per_color bits_per_color;                     // The bits per color.
+        easyav1_color_space color_space;                           // The color space.
+        easyav1_color_primaries color_primaries;                   // The color primaries.
+        easyav1_transfer_characteristics transfer_characteristics; // The transfer characteristics.
+        easyav1_matrix_coefficients matrix_coefficients;           // The matrix coefficients.
+        easyav1_chroma_sample_position chroma_sample_position;     // The chroma sample position.
+        unsigned int width;                                        // The width of the frame.
+        unsigned int height;                                       // The height of the frame.
+    } properties;
     easyav1_timestamp timestamp;                               // The timestamp of the frame.
     const void *data[3];                                       // The data for each YUV plane.
     size_t stride[3];                                          // The stride for each YUV plane.

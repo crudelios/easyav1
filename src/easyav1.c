@@ -46,7 +46,7 @@ typedef CONDITION_VARIABLE pthread_cond_t;
 
 #define INVALID_TIMESTAMP ((easyav1_timestamp) -1)
 
-#define EASYAV1_STATUS_IS_ERROR(status) ((status) <= EASYAV1_STATUS_ERROR)
+#define EASYAV1_STATUS_IS_ERROR(status) ((status) <= EASYAV1_STATUS_ERROR ? EASYAV1_TRUE : EASYAV1_FALSE)
 
 
 /**
@@ -2272,7 +2272,7 @@ static void *video_decoder_thread(void *arg)
 {
     easyav1_t *easyav1 = (easyav1_t *) arg;
 
-    while (!EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+    while (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_FALSE) {
 
         if (handle_video_decoder_thread_command(easyav1) == THREAD_COMMAND_STOP) {
             break;
@@ -2304,7 +2304,7 @@ static void *video_decoder_thread(void *arg)
 
         easyav1_status status = decode_video(easyav1, packet, &pic);
 
-        if (EASYAV1_STATUS_IS_ERROR(status)) {
+        if (EASYAV1_STATUS_IS_ERROR(status) == EASYAV1_TRUE) {
             pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.decoder);
             log(EASYAV1_LOG_LEVEL_ERROR, "Failed to decode video packet.");
             return 0;
@@ -2440,6 +2440,7 @@ static easyav1_status decode_audio(easyav1_t *easyav1, easyav1_packet *packet, u
 
     if (easyav1->audio.has_samples_in_buffer == EASYAV1_FALSE) {
         easyav1->audio.frame.samples = 0;
+        easyav1->audio.frame.timestamp = packet->timestamp;
     }
 
     if (easyav1->seek.mode != NOT_SEEKING) {
@@ -2579,7 +2580,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
             pthread_cond_wait(&easyav1->video.decoder_thread.conditions.has_frames_to_display,
                 &easyav1->video.decoder_thread.mutexes.io);
 
-            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+            if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
                 pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
                 return EASYAV1_STATUS_ERROR;
             }
@@ -2587,7 +2588,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
 
         pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
 
-        if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
             return EASYAV1_STATUS_ERROR;
         }
 
@@ -2602,7 +2603,7 @@ static easyav1_status decode_packet(easyav1_t *easyav1, easyav1_packet *packet)
     if (easyav1->seek.mode == SEEKING_FOR_SQHDR) {
         easyav1_status status = send_packet_data_to_decoder(easyav1, packet, seek_sequence_header);
 
-        if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+        if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
             return EASYAV1_STATUS_ERROR;
         }
     }
@@ -2621,7 +2622,7 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
         return EASYAV1_STATUS_ERROR;
     }
 
@@ -2674,7 +2675,7 @@ easyav1_status easyav1_decode_next(easyav1_t *easyav1)
 
 static easyav1_status do_decode_until(easyav1_t *easyav1, easyav1_timestamp timestamp)
 {
-    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
         return EASYAV1_STATUS_ERROR;
     }
 
@@ -2706,7 +2707,7 @@ static easyav1_status do_decode_until(easyav1_t *easyav1, easyav1_timestamp time
 
         easyav1->settings.use_fast_seeking = use_fast_seeking;
 
-        if (EASYAV1_STATUS_IS_ERROR(status)) {
+        if (EASYAV1_STATUS_IS_ERROR(status) == EASYAV1_TRUE) {
             return EASYAV1_STATUS_ERROR;
         }
     }
@@ -2858,7 +2859,7 @@ easyav1_status easyav1_play(easyav1_t *easyav1)
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
         return EASYAV1_STATUS_ERROR;
     }
 
@@ -2898,7 +2899,7 @@ void easyav1_stop(easyav1_t *easyav1)
         return;
     }
 
-    if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+    if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
         return;
     }
 
@@ -2967,7 +2968,7 @@ static easyav1_status do_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp
 
     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
 
-    if (EASYAV1_STATUS_IS_ERROR(status)) {
+    if (EASYAV1_STATUS_IS_ERROR(status) == EASYAV1_TRUE) {
         return EASYAV1_STATUS_ERROR;
     }
 
@@ -3081,7 +3082,7 @@ static easyav1_status do_seek_to_timestamp(easyav1_t *easyav1, easyav1_timestamp
         while (1) {
             easyav1_packet *packet = get_next_packet(easyav1);
 
-            if (EASYAV1_STATUS_IS_ERROR(easyav1->status)) {
+            if (EASYAV1_STATUS_IS_ERROR(easyav1->status) == EASYAV1_TRUE) {
                 resume_video_decoder_thread(easyav1);
 
                 if (easyav1->playback.active == EASYAV1_TRUE) {
@@ -3293,211 +3294,211 @@ static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_
 
     switch (sqhdr->layout) {
         case DAV1D_PIXEL_LAYOUT_I400:
-            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV400;
+            frame->properties.pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV400;
             break;
         case DAV1D_PIXEL_LAYOUT_I420:
-            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV420;
+            frame->properties.pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV420;
             break;
         case DAV1D_PIXEL_LAYOUT_I422:
-            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV422;
+            frame->properties.pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV422;
             break;
         case DAV1D_PIXEL_LAYOUT_I444:
-            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV444;
+            frame->properties.pixel_layout = EASYAV1_PIXEL_LAYOUT_YUV444;
             break;
         default:
-            frame->pixel_layout = EASYAV1_PIXEL_LAYOUT_UNKNOWN;
+            frame->properties.pixel_layout = EASYAV1_PIXEL_LAYOUT_UNKNOWN;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported pixel layout.");
             return EASYAV1_FALSE;
     }
 
     switch (sqhdr->hbd) {
         case 0:
-            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_8;
+            frame->properties.bits_per_color = EASYAV1_BITS_PER_COLOR_8;
             break;
         case 1:
-            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_10;
+            frame->properties.bits_per_color = EASYAV1_BITS_PER_COLOR_10;
             break;
         case 2:
-            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_12;
+            frame->properties.bits_per_color = EASYAV1_BITS_PER_COLOR_12;
             break;
         default:
-            frame->bits_per_color = EASYAV1_BITS_PER_COLOR_UNKNOWN;
+            frame->properties.bits_per_color = EASYAV1_BITS_PER_COLOR_UNKNOWN;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported bit depth.");
             return EASYAV1_FALSE;
     }
 
     switch (sqhdr->color_range) {
         case 0:
-            frame->color_space = EASYAV1_COLOR_SPACE_LIMITED;
+            frame->properties.color_space = EASYAV1_COLOR_SPACE_LIMITED;
             break;
         case 1:
-            frame->color_space = EASYAV1_COLOR_SPACE_FULL;
+            frame->properties.color_space = EASYAV1_COLOR_SPACE_FULL;
             break;
         default:
-            frame->color_space = EASYAV1_COLOR_SPACE_UNKNOWN;
+            frame->properties.color_space = EASYAV1_COLOR_SPACE_UNKNOWN;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported color space.");
             return EASYAV1_FALSE;
     }
 
     switch (sqhdr->pri) {
         case DAV1D_COLOR_PRI_BT709:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT709;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_BT709;
             break;
         case DAV1D_COLOR_PRI_UNKNOWN:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_UNKNOWN;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_UNKNOWN;
             break;
         case DAV1D_COLOR_PRI_BT470M:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT470M;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_BT470M;
             break;
         case DAV1D_COLOR_PRI_BT470BG:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT470BG;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_BT470BG;
             break;
         case DAV1D_COLOR_PRI_BT601:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT601;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_BT601;
             break;
         case DAV1D_COLOR_PRI_SMPTE240:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE240;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE240;
             break;
         case DAV1D_COLOR_PRI_FILM:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_FILM;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_FILM;
             break;
         case DAV1D_COLOR_PRI_BT2020:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_BT2020;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_BT2020;
             break;
         case DAV1D_COLOR_PRI_XYZ:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_XYZ;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_XYZ;
             break;
         case DAV1D_COLOR_PRI_SMPTE431:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE431;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE431;
             break;
         case DAV1D_COLOR_PRI_SMPTE432:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE432;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_SMPTE432;
             break;
         case DAV1D_COLOR_PRI_EBU3213:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_EBU3213;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_EBU3213;
             break;
         default:
-            frame->color_primaries = EASYAV1_COLOR_PRIMARIES_UNSPECIFIED;
+            frame->properties.color_primaries = EASYAV1_COLOR_PRIMARIES_UNSPECIFIED;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported color primaries.");
             return EASYAV1_FALSE;
     }
 
     switch (sqhdr->trc) {
         case DAV1D_TRC_BT709:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT709;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT709;
             break;
         case DAV1D_TRC_UNKNOWN:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_UNKNOWN;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_UNKNOWN;
             break;
         case DAV1D_TRC_BT470M:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT470M;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT470M;
             break;
         case DAV1D_TRC_BT470BG:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT470BG;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT470BG;
             break;
         case DAV1D_TRC_BT601:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT601;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT601;
             break;
         case DAV1D_TRC_SMPTE240:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE240;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE240;
             break;
         case DAV1D_TRC_LINEAR:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LINEAR;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LINEAR;
             break;
         case DAV1D_TRC_LOG100:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100;
             break;
         case DAV1D_TRC_LOG100_SQRT10:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100_SQRT;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_LOG_100_SQRT;
             break;
         case DAV1D_TRC_IEC61966:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_IEC61966;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_IEC61966;
             break;
         case DAV1D_TRC_BT1361:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT1361;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT1361;
             break;
         case DAV1D_TRC_SRGB:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SRGB;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SRGB;
             break;
         case DAV1D_TRC_BT2020_10BIT:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_10;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_10;
             break;
         case DAV1D_TRC_BT2020_12BIT:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_12;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_BT2020_12;
             break;
         case DAV1D_TRC_SMPTE2084:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE2084;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE2084;
             break;
         case DAV1D_TRC_SMPTE428:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE428;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_SMPTE428;
             break;
         case DAV1D_TRC_HLG:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_HLG;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_HLG;
             break;
         default:
-            frame->transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
+            frame->properties.transfer_characteristics = EASYAV1_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported transfer characteristics.");
             return EASYAV1_FALSE;
     }
 
     switch (sqhdr->mtrx) {
         case DAV1D_MC_IDENTITY:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_IDENTITY;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_IDENTITY;
             break;
         case DAV1D_MC_BT709:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT709;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT709;
             break;
         case DAV1D_MC_UNKNOWN:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_UNKONWN;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_UNKNOWN;
             break;
         case DAV1D_MC_FCC:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_FCC;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_FCC;
             break;
         case DAV1D_MC_BT470BG:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT470BG;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT470BG;
             break;
         case DAV1D_MC_BT601:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT601;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT601;
             break;
         case DAV1D_MC_SMPTE240:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE240;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE240;
             break;
         case DAV1D_MC_SMPTE_YCGCO:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE_YCGCO;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE_YCGCO;
             break;
         case DAV1D_MC_BT2020_NCL:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT2020_NCL;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT2020_NCL;
             break;
         case DAV1D_MC_BT2020_CL:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT2020_CL;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_BT2020_CL;
             break;
         case DAV1D_MC_SMPTE2085:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE2085;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_SMPTE2085;
             break;
         case DAV1D_MC_CHROMAT_NCL:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_NCL;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_NCL;
             break;
         case DAV1D_MC_CHROMAT_CL:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_CL;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_CHROMATICITY_CL;
             break;
         case DAV1D_MC_ICTCP:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_ICTCP;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_ICTCP;
             break;
         default:
-            frame->matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_UNSPECIFIED;
+            frame->properties.matrix_coefficients = EASYAV1_MATRIX_COEFFICIENTS_UNSPECIFIED;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported matrix coefficients.");
             return EASYAV1_FALSE;
     }
 
     switch (sqhdr->chr) {
         case EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL:
-            frame->chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL;
+            frame->properties.chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL;
                 break;
         case EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED:
-            frame->chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED;
+            frame->properties.chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED;
                 break;
         default:
-            frame->chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_UNKNOWN;
+            frame->properties.chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_UNKNOWN;
             log(EASYAV1_LOG_LEVEL_WARNING, "Unsupported chroma sample position.");
             return EASYAV1_FALSE;
     }
@@ -3561,8 +3562,8 @@ const easyav1_video_frame *easyav1_get_video_frame(easyav1_t *easyav1)
     frame->stride[1] = pic->stride[1];
     frame->stride[2] = pic->stride[1];
 
-    frame->width = (unsigned int) pic->p.w;
-    frame->height = (unsigned int) pic->p.h;
+    frame->properties.width = (unsigned int) pic->p.w;
+    frame->properties.height = (unsigned int) pic->p.h;
 
     frame->timestamp = (uint64_t) pic->m.timestamp;
 
@@ -3651,7 +3652,7 @@ easyav1_status easyav1_get_status(easyav1_t *easyav1)
 
     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
 
-    return EASYAV1_STATUS_IS_ERROR(status) ? EASYAV1_STATUS_ERROR : status;
+    return EASYAV1_STATUS_IS_ERROR(status) == EASYAV1_TRUE ? EASYAV1_STATUS_ERROR : status;
 }
 
 easyav1_timestamp easyav1_get_current_timestamp(easyav1_t *easyav1)
