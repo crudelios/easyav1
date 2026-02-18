@@ -17,7 +17,7 @@ set(CMAKE_C_STANDARD 99)
 
 set(DAVID_VERSION_MAJOR 1)
 set(DAVID_VERSION_MINOR 5)
-set(DAVID_VERSION_PATCH 1)
+set(DAVID_VERSION_PATCH 3)
 set(DAVID_VERSION "${DAVID_VERSION_MAJOR}.${DAVID_VERSION_MINOR}.${DAVID_VERSION_PATCH}")
 
 project(dav1d VERSION "${DAVID_VERSION}" LANGUAGES C)
@@ -407,12 +407,14 @@ else()
         endif()
     endif()
 
+    check_symbol_exists(sigaction "signal.h" HAVE_SIGACTION)
     check_symbol_exists(posix_memalign "stdlib.h" HAVE_POSIX_MEMALIGN)
     check_symbol_exists(memalign "malloc.h" HAVE_MEMALIGN)
     check_symbol_exists(aligned_alloc "stdlib.h" HAVE_ALIGNED_ALLOC)
 endif()
 
 add_to_configure_file("config.h" "HAVE_CLOCK_GETTIME" TYPE_BOOLEAN)
+add_to_configure_file("config.h" "HAVE_SIGACTION" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_POSIX_MEMALIGN" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_MEMALIGN" TYPE_BOOLEAN)
 add_to_configure_file("config.h" "HAVE_ALIGNED_ALLOC" TYPE_BOOLEAN)
@@ -579,6 +581,7 @@ if(MSVC)
     list(APPEND OPTIONAL_FLAGS -wd4028) # parameter different from declaration
     list(APPEND OPTIONAL_FLAGS -wd4090) # broken with arrays of pointers
     list(APPEND OPTIONAL_FLAGS -wd4996) # use of POSIX functions
+    list(APPEND OPTIONAL_FLAGS -wd5287) # operands are different enum types
 else()
     list(APPEND OPTIONAL_FLAGS
       -Wundef
@@ -879,7 +882,7 @@ add_to_configure_file("config.h" "ARCH_LOONGARCH64" TYPE_BOOLEAN)
 # https://mesonbuild.com/Release-notes-for-0-37-0.html#new-compiler-function-symbols_have_underscore_prefix
 # For example, Windows 32-bit prefixes underscore, but 64-bit does not.
 # Linux does not prefix an underscore but OS X does.
-if((WIN32 AND "${PROCESSOR}" STREQUAL "i386") OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "tvOS")
+if((WIN32 AND "${PROCESSOR}" STREQUAL "i386") OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR ${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "tvOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "OS2")
     add_to_configure_file("config.h" "PREFIX" "1" TYPE_BOOLEAN)
     add_to_configure_file("config.asm" "PREFIX" "1" TYPE_BOOLEAN)
 endif()
