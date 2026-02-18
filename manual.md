@@ -24,7 +24,7 @@
   - [**2.7 Linking Against easyav1**](#27-linking-against-easyav1)
     - [**Option A – Embedded Build (Recommended)**](#option-a--embedded-build-recommended)
     - [**Option B – Manual Linking**](#option-b--manual-linking)
-- [**3. Data Types and Enums**](#3-data-types-and-enums)
+- [**3. Main data Types and Enums**](#3-main-data-types-and-enums)
   - [3.1 `easyav1_t`](#31-easyav1_t)
   - [3.2 `easyav1_bool`](#32-easyav1_bool)
   - [3.3 `easyav1_status`](#33-easyav1_status)
@@ -102,26 +102,32 @@
     - [Notes](#notes-1)
   - [7.4 Example: Writing PCM to File](#74-example-writing-pcm-to-file)
   - [7.5 Integration with SDL](#75-integration-with-sdl)
-- [**7. Decoder Settings (`easyav1_settings`)**](#7-decoder-settings-easyav1_settings)
-  - [Overview](#overview)
-  - [Structure Definition](#structure-definition)
-  - [Field Reference](#field-reference)
-    - [`enable_video`](#enable_video)
-    - [`enable_audio`](#enable_audio)
-    - [`skip_unprocessed_frames`](#skip_unprocessed_frames)
-    - [`interlace_audio`](#interlace_audio)
-    - [`close_handle_on_destroy`](#close_handle_on_destroy)
-    - [`callbacks`](#callbacks)
-    - [`video_track`](#video_track)
-    - [`audio_track`](#audio_track)
-    - [`use_fast_seeking`](#use_fast_seeking)
-    - [`audio_offset_time`](#audio_offset_time)
-    - [`log_level`](#log_level)
-  - [Related Functions](#related-functions)
-    - [`easyav1_default_settings`](#easyav1_default_settings)
-    - [`easyav1_get_current_settings`](#easyav1_get_current_settings)
-    - [`easyav1_update_settings`](#easyav1_update_settings)
-  - [Usage Example](#usage-example)
+- [**8. Important structures**](#8-important-structures)
+  - [**8.1 Decoder Settings (`easyav1_settings`)**](#81-decoder-settings-easyav1_settings)
+    - [Overview](#overview)
+    - [Structure Definition](#structure-definition)
+    - [Field Reference](#field-reference)
+      - [`enable_video`](#enable_video)
+      - [`enable_audio`](#enable_audio)
+      - [`skip_unprocessed_frames`](#skip_unprocessed_frames)
+      - [`interlace_audio`](#interlace_audio)
+      - [`close_handle_on_destroy`](#close_handle_on_destroy)
+      - [`callbacks`](#callbacks)
+      - [`video_track`](#video_track)
+      - [`audio_track`](#audio_track)
+      - [`use_fast_seeking`](#use_fast_seeking)
+      - [`audio_offset_time`](#audio_offset_time)
+      - [`log_level`](#log_level)
+    - [Related Functions](#related-functions)
+      - [`easyav1_default_settings`](#easyav1_default_settings)
+      - [`easyav1_get_current_settings`](#easyav1_get_current_settings)
+      - [`easyav1_update_settings`](#easyav1_update_settings)
+    - [Usage Example](#usage-example)
+  - [**8.2 Custom streams (`easyav1_stream`)**](#82-custom-streams-easyav1_stream)
+    - [Overview](#overview-1)
+    - [Structure Definition](#structure-definition-1)
+    - [Field Reference](#field-reference-1)
+      - [`easyav1_read_func`](#easyav1_read_func)
 - [**8. Stream Information**](#8-stream-information)
   - [8.1 `easyav1_get_video_width` / `easyav1_get_video_height`](#81-easyav1_get_video_width--easyav1_get_video_height)
     - [Description](#description-12)
@@ -419,7 +425,7 @@ target_link_libraries(myapp PRIVATE easyav1 dav1d Threads::Threads m)
 
 ---
 
-# **3. Data Types and Enums**
+# **3. Main data Types and Enums**
 
 This chapter documents the fundamental data structures and enumerations used throughout the `easyav1` API.
 
@@ -499,10 +505,10 @@ All decoded video and audio frames carry a timestamp.
 
 ```c
 typedef struct {
-    uint8_t *planes[3];          // Y, U, V planes
-    int stride[3];               // Bytes per row for each plane
-    struct properties;           // Properties of the frame, such as width, height and color format
-    easyav1_timestamp timestamp; // Presentation timestamp (ms)
+    uint8_t *planes[3];                        // Y, U, V planes
+    int stride[3];                             // Bytes per row for each plane
+    easyav1_video_frame_properties properties; // Properties of the frame, such as width, height and color format
+    easyav1_timestamp timestamp;               // Presentation timestamp (ms)
 } easyav1_video_frame;
 ```
 
@@ -517,6 +523,7 @@ Represents a single decoded video frame in **YUV planar format**.
 
 * The data is owned by the decoder. Do **not** free or modify it.
 * If you need to keep a frame after the next decode step, copy the data.
+* For more detail about video frame properties, check TODO
 
 ---
 
@@ -663,6 +670,9 @@ Useful when integrating with specific memory streams that are created immediatel
 
 * `stream` →
   Pointer to an `easyav1_stream` structure, that will handle the fetching of the actual data.
+
+  To handle the structure, check TODO
+
 * `settings` *(optional)* →
   If `NULL`, default settings are used.
 
@@ -1162,9 +1172,11 @@ See **Tutorial 6** for a full SDL integration example.
 
 ---
 
-# **7. Decoder Settings (`easyav1_settings`)**
+# **8. Important structures**
 
-## Overview
+## **8.1 Decoder Settings (`easyav1_settings`)**
+
+### Overview
 
 The behavior of `easyav1` can be customized using the `easyav1_settings` structure.
 Applications typically obtain a copy of the default settings using `easyav1_default_settings()`, modify the fields they care about, and pass the structure to one of the initialization functions (e.g. `easyav1_init_from_filename`).
@@ -1173,7 +1185,7 @@ If `NULL` is passed instead, default values are used automatically.
 
 ---
 
-## Structure Definition
+### Structure Definition
 
 ```c
 typedef struct {
@@ -1197,42 +1209,42 @@ typedef struct {
 
 ---
 
-## Field Reference
+### Field Reference
 
-### `enable_video`
+#### `enable_video`
 
 Enables or disables video decoding.
 
 * `EASYAV1_TRUE` → Decode video track (if present).
 * `EASYAV1_FALSE` → Skip video decoding.
 
-### `enable_audio`
+#### `enable_audio`
 
 Enables or disables audio decoding.
 
 * `EASYAV1_TRUE` → Decode audio track (if present).
 * `EASYAV1_FALSE` → Skip audio decoding.
 
-### `skip_unprocessed_frames`
+#### `skip_unprocessed_frames`
 
 Controls whether unprocessed frames should be skipped.
 
 * Useful when decoding cannot keep up with real-time and old frames can be discarded.
 
-### `interlace_audio`
+#### `interlace_audio`
 
 Controls the audio sample layout.
 
 * `EASYAV1_TRUE` → **Interleaved** samples (use `frame->samples_data`).
 * `EASYAV1_FALSE` → **Deinterleaved** samples (per-channel access).
 
-### `close_handle_on_destroy`
+#### `close_handle_on_destroy`
 
 Whether `easyav1_destroy()` should also close the underlying I/O handle.
 
 * Applies to `FILE*` (from `init_from_file`) and memory buffers (from `init_from_memory`).
 
-### `callbacks`
+#### `callbacks`
 
 Optional user callbacks:
 
@@ -1241,20 +1253,20 @@ Optional user callbacks:
 * **userdata** → User pointer passed to both callbacks.
   If `NULL`, no callback is used.
 
-### `video_track`
+#### `video_track`
 
 Selects which video track to decode (0-indexed among video streams only).
 
-### `audio_track`
+#### `audio_track`
 
 Selects which audio track to decode (0-indexed among audio streams only).
 
-### `use_fast_seeking`
+#### `use_fast_seeking`
 
 * `EASYAV1_TRUE` → Seek to nearest keyframe before the requested timestamp (fast, approximate).
 * `EASYAV1_FALSE` → Seek precisely to the requested timestamp (may decode extra frames).
 
-### `audio_offset_time`
+#### `audio_offset_time`
 
 Adjusts audio relative to video in **milliseconds**.
 
@@ -1264,7 +1276,7 @@ Adjusts audio relative to video in **milliseconds**.
 
 ---
 
-### `log_level`
+#### `log_level`
 
 Controls verbosity of internal logging. Messages are printed to `stderr` with severity labels.
 
@@ -1288,9 +1300,9 @@ The default level is **`EASYAV1_LOG_LEVEL_WARNING`**.
 
 ---
 
-## Related Functions
+### Related Functions
 
-### `easyav1_default_settings`
+#### `easyav1_default_settings`
 
 ```c
 EASYAV1_API easyav1_settings
@@ -1300,7 +1312,7 @@ easyav1_default_settings(void);
 Returns a structure with default settings filled in.
 Applications should always start from this.
 
-### `easyav1_get_current_settings`
+#### `easyav1_get_current_settings`
 
 ```c
 EASYAV1_API easyav1_settings
@@ -1309,7 +1321,7 @@ easyav1_get_current_settings(const easyav1_t *ctx);
 
 Retrieves the current active settings from a decoder context.
 
-### `easyav1_update_settings`
+#### `easyav1_update_settings`
 
 ```c
 EASYAV1_API easyav1_status
@@ -1321,7 +1333,7 @@ Updates decoder settings at runtime (not all fields may be changeable).
 
 ---
 
-## Usage Example
+### Usage Example
 
 ```c
 easyav1_settings s = easyav1_default_settings();
@@ -1335,6 +1347,42 @@ easyav1_t *ctx = easyav1_init_from_filename("movie.webm", &s);
 ```
 
 ---
+
+
+## **8.2 Custom streams (`easyav1_stream`)**
+
+### Overview
+
+You can specify custom streams to be parsed by the decoder by initialising an `easyav1_t` instance with `easyav1_init_from_custom_stream`.
+
+In fact, the library internally calls `easyav1_init_from_custom_stream`, using pre-populated `easyav1_stream`s.
+
+---
+
+### Structure Definition
+
+```c
+typedef struct {
+    easyav1_read_func read_func;
+    easyav1_seek_func seek_func;
+    easyav1_tell_func tell_func;
+
+    void *userdata;
+} easyav1_stream;
+```
+
+---
+
+### Field Reference
+
+#### `easyav1_read_func`
+
+```c
+typedef int(*easyav1_read_func)(void *buffer, size_t size, void *userdata);
+```
+
+- `void *buffer` → A pointer to a buffer provided by 
+
 
 # **8. Stream Information**
 
