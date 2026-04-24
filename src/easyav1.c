@@ -3491,10 +3491,10 @@ static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_
     }
 
     switch (sqhdr->chr) {
-        case EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL:
+        case DAV1D_CHR_VERTICAL:
             frame->properties.chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_VERTICAL;
                 break;
-        case EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED:
+        case DAV1D_CHR_COLOCATED:
             frame->properties.chroma_sample_position = EASYAV1_CHROMA_SAMPLE_POSITION_COLOCATED;
                 break;
         default:
