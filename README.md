@@ -69,9 +69,9 @@ int main(int argc, char **argv)
 
 Alternatively, you can check the `tools` folder:
 
-- `easyav1_benchmark.c` - A simple benchmark tool, plays all frames as fast as possible and measures how long it takes
+- `easyav1_benchmark.c` - A simple benchmarking tool, plays all frames as fast as possible and measures how long it takes
   to decode them.
-- `easyav1_player.c` - A proper mini player with some basic features such as seeking.
+- `easyav1_player.c` - A proper mini player with some basic features such as seeking. Requires SDL3 to build.
 
 
 ## Okay, but how do I build it?
@@ -85,13 +85,17 @@ To build easyAV1, you generally need:
 
 If you're building for ARM64 on windows using Visual Studio, you'll also need Perl.
 
-If using Windows, place the SDL3 libraries (either the MSVC or the MinGW dev libraries that you can get from SDL's release page) inside `ext/SDL3`. That will be enough for CMake to detect the library.
+If using Windows, set `CMAKE_PREFIX_PATH` to point to your SDL3 library. That should be enough for CMake to detect the library.
+
+easyAV1 has been tested to run on Windows (x64 and ARM64), Linux, macOS (including bundled as an universal binary), Android, PSVita (using VitaSDK, runs at 60fps only at half the Vita's resolution due to the slow CPU) and Switch (using devKitPro).
+
+If you have the dav1d library, you can use the CMake option `EASYAV1_USE_EXTERNAL_DAV1D_LIBRARY=ON`. Otherwise you should clone the dav1d submodule when cloning this repo so the dav1d library source code is properly downloaded and compiled.
 
 Then run:
 
 ```bash
 $ mkdir build && cd build
-$ cmake ..
+$ cmake [-DCMAKE_PREFIX_PATH=<path to SDL on Windows>] [-DEASYAV1_USE_EXTERNAL_DAV1D_LIBRARY=ON] ..
 $ make
 ```
 
@@ -110,14 +114,14 @@ $ ffmpeg -i input.mp4 -c:v libsvtav1 -b:v 3000k -c:a libvorbis -q:a 4 -format we
 
 ## We already have things like ffmpeg. Why should I use this instead?
 
-The purpose of this library is to be easy to use and, in particularly, easy to add to an existing project.
+The purpose of this library is to be easy to use and, in particular, easy to add to an existing project.
 
 In addition, it has a much smaller executable footprint than ffmpeg.
 
 However, software AV1 decoding is all but simple. So, to try and fulfill that objective as best as possible, the library abides by the following rules:
 
 - All code is C99, for maximum portability
-- Libraries used by the code are bundled with this library
+- Libraries used by the code are bundled with this library (for dav1d, you need to download the Git submodules after cloning this repo)
 - The entire project, including bundled libraries, use CMake to build. CMake is more widely available than, say, Meson, and is also more portable
 
 
@@ -125,7 +129,7 @@ However, software AV1 decoding is all but simple. So, to try and fulfill that ob
 
 AV1 is a very interesting video codec. Developed by AOM, it (hopefully) is free of any patents, and it's also very efficient, providing good quality video at fairly low bitrates.
 
-In essence, this library serves the same purpose of [pl_mpeg](https://github.com/phoboslab/pl_mpeg: getting video playback into a simple app or and old-school or indie game, without requiring huge complicated libraries.
+In essence, this library serves the same purpose of [pl_mpeg](https://github.com/phoboslab/pl_mpeg): getting video playback into a simple app or and old-school or indie game, without requiring huge complicated libraries.
 
 
 ## What is the catch?
