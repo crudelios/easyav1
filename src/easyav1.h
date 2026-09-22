@@ -137,7 +137,7 @@ typedef int(*easyav1_read_func)(void *buffer, size_t size, void *userdata);
  *
  *   - `SEEK_CUR` sets the pointer to `offset` bytes after the current position.
  *
- *   - `SEEK_END` sets the pointer to `offset` bytes before the end of the buffer.
+ *   - `SEEK_END` sets the pointer relative to the end of the buffer (negative offsets count backwards from the end).
  *
  * @param userdata Custom optional user-defined data.
  *
@@ -362,12 +362,19 @@ typedef enum {
  *    `pcm.deinterlaced` field. Do note, though, that you can only use the appropriate field depending on the
  *    `interlace_audio` setting.
  *
- * - `close_handle_on_destroy`: Indicates whether the handle should be closed on destroy.
+ * - `close_file_handle_on_destroy`: Indicates whether `easyav1_destroy` should close the `FILE` handle that was
+ *    passed to `easyav1_init_from_file`.
  *
- *     If this is set to `EASYAV1_TRUE`, the handle will be closed when calling `easyav1_destroy`.
- *     If it is set to `EASYAV1_FALSE`, the handle will not be closed.
- *     The handle will either be the `FILE` handle (if the instance was initialized from such a handle using
- *     `easyav1_init_from_file`) or the memory buffer (if the instance was initialized from `easyav1_init_from_memory`).
+ *    Ownership decides what happens on `easyav1_destroy`:
+ *
+ *    - With `easyav1_init_from_filename`, easyAV1 opened the file itself, so it always closes it on destroy
+ *      (this setting does not apply to it).
+ *
+ *    - With `easyav1_init_from_file`, the file belongs to you. If this is set to `EASYAV1_TRUE`, easyAV1 will
+ *      close it on `easyav1_destroy`; if it is set to `EASYAV1_FALSE`, it is left open for you to close.
+ *
+ *    - With `easyav1_init_from_memory` and `easyav1_init_from_custom_stream`, your data/I-O is never freed or
+ *      closed by easyAV1 — it only frees its own internal bookkeeping.
  *
  * - `callbacks`: The callbacks to use for video and audio.
  *
@@ -384,8 +391,6 @@ typedef enum {
  *
  * - `audio_track`: The audio track to use. The track is 0-indexed and based only on the audio tracks in the file.
  *   if you have a video track, and audio track, and another video track, the audio track will be 0.
- *
- * - `max_audio_samples`: The maximum number of audio samples.
  *
  * - `use_fast_seeking`: Indicates whether fast seeking should be used. If fast seeking is enabled, easyav1 will seek
  *    to the nearest keyframe before the requested timestamp. Otherwise it will seek to the requested timestamp, which
@@ -417,7 +422,7 @@ typedef struct {
     easyav1_bool enable_audio;
     easyav1_bool skip_unprocessed_frames;
     easyav1_bool interlace_audio;
-    easyav1_bool close_handle_on_destroy;
+    easyav1_bool close_file_handle_on_destroy;
     struct {
         easyav1_video_callback video;
         easyav1_audio_callback audio;
@@ -439,7 +444,7 @@ typedef struct {
  * - Audio enabled (`.enable_audio = EASYAV1_TRUE`)
  * - Skip unprocessed frames (`.skip_unprocessed_frames = EASYAV1_TRUE`)
  * - Interlace audio (`.interlace_audio = EASYAV1_TRUE`)
- * - Don't close the handle on destroy (`.close_handle_on_destroy = EASYAV1_FALSE`)
+ * - Don't close the handle on destroy (`.close_file_handle_on_destroy = EASYAV1_FALSE`)
  * - No callbacks (`callbacks.video = NULL, callbacks.audio = NULL, callbacks.userdata = NULL`)
  * - Video track 0 (`.video_track = 0`)
  * - Audio track 0 (`.audio_track = 0`)
@@ -458,6 +463,8 @@ easyav1_settings easyav1_default_settings(void);
  * @param filename The filename of the file to open.
  * @param settings The settings to use for the easyav1 instance. If this is `NULL`, the default settings will be used.
  *
+ * @note easyAV1 opens and therefore owns the file: it will always be closed by `easyav1_destroy`.
+ *
  * @return The `easyav1` instance, or `NULL` if an error occurred.
  */
 easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settings *settings);
@@ -468,6 +475,9 @@ easyav1_t *easyav1_init_from_filename(const char *filename, const easyav1_settin
  *
  * @param f The open `FILE` handle.
  * @param settings The settings to use for the easyav1 instance. If this is `NULL`, the default settings will be used.
+ *
+ * @note You own the handle. Set `close_file_handle_on_destroy` in the settings if you want `easyav1_destroy`
+ *       to close it for you; otherwise close it yourself.
  *
  * @return The `easyav1` instance, or `NULL` if an error occurred.
  */

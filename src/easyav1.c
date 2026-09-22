@@ -309,7 +309,7 @@ static const easyav1_settings DEFAULT_SETTINGS = {
     .enable_audio = EASYAV1_TRUE,
     .skip_unprocessed_frames = EASYAV1_TRUE,
     .interlace_audio = EASYAV1_TRUE,
-    .close_handle_on_destroy = EASYAV1_FALSE,
+    .close_file_handle_on_destroy = EASYAV1_FALSE,
     .callbacks = {
         .video = NULL,
         .audio = NULL,
@@ -817,16 +817,18 @@ static int memory_seek(int64_t offset, int origin, void *userdata)
     if (!mem || !mem->data) {
         return -1;
     }
-    if (origin == SEEK_SET) {
-        mem->offset = offset;
-    } else if (origin == SEEK_CUR) {
-        mem->offset += offset;
+    if (origin == SEEK_CUR) {
+        offset += mem->offset;
     } else if (origin == SEEK_END) {
-        mem->offset = mem->size - offset;
+        offset += mem->size;
     }
-    if (mem->offset > mem->size) {
-        mem->offset = mem->size;
+    if (offset < 0) {
+        return -1;
     }
+    if ((size_t) offset > mem->size) {
+        offset = (int64_t) mem->size;
+    }
+    mem->offset = offset;
     return 0;
 }
 
@@ -1035,13 +1037,6 @@ static Dav1dPicture *get_oldest_video_frame_from_queue(easyav1_t *easyav1);
  * @param easyav1 The easyav1 context to remove the video frame from.
  */
 static void dequeue_video_frame(easyav1_t *easyav1);
-
-/**
- * @brief Removes all video frames that have been displayed from the queue.
- *
- * @param easyav1 The easyav1 context to remove the video frames from.
- */
-static void dequeue_used_video_frames(easyav1_t *easyav1);
 
 /**
  * @brief Removes all video frames from the queue.
@@ -1700,13 +1695,14 @@ easyav1_t *easyav1_init_from_file(FILE *f, const easyav1_settings *settings)
 
     if (!easyav1) {
         log(EASYAV1_LOG_LEVEL_ERROR, "Failed to create easyav1 structure from file handle");
-        if ((settings && settings->close_handle_on_destroy) || (!settings && DEFAULT_SETTINGS.close_handle_on_destroy)) {
+        if ((settings && settings->close_file_handle_on_destroy) ||
+            (!settings && DEFAULT_SETTINGS.close_file_handle_on_destroy)) {
             fclose(f);
         }
         return NULL;
     }
 
-    if (easyav1->settings.close_handle_on_destroy) {
+    if (easyav1->settings.close_file_handle_on_destroy) {
         easyav1->stream.type = STREAM_TYPE_FILE;
         easyav1->stream.data = f;
     }
