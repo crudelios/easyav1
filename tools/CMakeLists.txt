@@ -10,9 +10,8 @@ else()
 	add_executable("${PROJECT_NAME}_player" "easyav1_player.c")
 	target_include_directories(${PROJECT_NAME} PUBLIC
 		"src"
-		${SDL3_INCLUDE_DIR}
 	)
-	target_link_libraries("${PROJECT_NAME}_player" "${PROJECT_NAME}" ${SDL3_LIBRARY})
+	target_link_libraries("${PROJECT_NAME}_player" "${PROJECT_NAME}" SDL3::SDL3)
 endif()
 
 add_executable("${PROJECT_NAME}_benchmark" "easyav1_benchmark.c")

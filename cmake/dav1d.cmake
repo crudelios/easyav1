@@ -17,7 +17,7 @@ set(CMAKE_C_STANDARD 99)
 
 set(DAVID_VERSION_MAJOR 1)
 set(DAVID_VERSION_MINOR 5)
-set(DAVID_VERSION_PATCH 3)
+set(DAVID_VERSION_PATCH 4)
 set(DAVID_VERSION "${DAVID_VERSION_MAJOR}.${DAVID_VERSION_MINOR}.${DAVID_VERSION_PATCH}")
 
 project(dav1d VERSION "${DAVID_VERSION}" LANGUAGES C)
@@ -1200,6 +1200,7 @@ if(HAVE_ASM)
             if(CONFIG_8BPC)
                 list(APPEND LIBDAV1D_SOURCES
                     ${DAV1D_DIR}/src/riscv/64/cdef.S
+                    ${DAV1D_DIR}/src/riscv/64/filmgrain.S
                     ${DAV1D_DIR}/src/riscv/64/ipred.S
                     ${DAV1D_DIR}/src/riscv/64/itx.S
                     ${DAV1D_DIR}/src/riscv/64/mc.S
@@ -1209,6 +1210,7 @@ if(HAVE_ASM)
             if(CONFIG_16BPC)
                 list(APPEND LIBDAVID_SOURCES
                     ${DAV1D_DIR}/src/riscv/64/cdef16.S
+                    ${DAV1D_DIR}/src/riscv/64/filmgrain16.S
                     ${DAV1D_DIR}/src/riscv/64/ipred16.S
                     ${DAV1D_DIR}/src/riscv/64/mc16.S
                 )

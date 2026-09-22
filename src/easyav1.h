@@ -38,7 +38,7 @@
  *             // Do something with the video frame.
  *         }
  *
- *         if (easyav1_has_audio_frame(easyav1) == EASYAV1_TRUE) {
+ *         if (easyav1_is_audio_buffer_filled(easyav1) == EASYAV1_TRUE) {
  *             const easyav1_audio_frame *audio_frame = easyav1_get_audio_frame(easyav1);
  *             // Do something with the audio frame.
  *         }
@@ -78,6 +78,9 @@ typedef struct easyav1_t easyav1_t;
 
 /**
  * Timestamp type. This is used for all timestamp related operations.
+ *
+ * @note All timestamps exposed by easyAV1 (frame timestamps, duration, seek positions, etc.)
+ *       are in **milliseconds**.
  */
 typedef uint64_t easyav1_timestamp;
 
@@ -639,7 +642,7 @@ easyav1_bool easyav1_has_video_track(const easyav1_t *easyav1);
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return `EASYAV1_TRUE` if there is an audio track, `EASYAV1_TRUE` otherwise.
+ * @return `EASYAV1_TRUE` if there is an audio track, `EASYAV1_FALSE` otherwise.
  */
 easyav1_bool easyav1_has_audio_track(const easyav1_t *easyav1);
 
