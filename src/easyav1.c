@@ -2904,7 +2904,9 @@ void easyav1_stop(easyav1_t *easyav1)
         return;
     }
 
+    pthread_mutex_lock(&easyav1->playback.mutex);
     easyav1->playback.do_pause = EASYAV1_TRUE;
+    pthread_mutex_unlock(&easyav1->playback.mutex);
 
     pthread_join(easyav1->playback.thread, NULL);
 
@@ -3238,7 +3240,11 @@ easyav1_status easyav1_seek_forward(easyav1_t *easyav1, easyav1_timestamp time)
         return EASYAV1_STATUS_ERROR;
     }
 
-    return easyav1_seek_to_timestamp(easyav1, easyav1->position + time);
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
+    easyav1_timestamp timestamp = easyav1->position + time;
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
+
+    return easyav1_seek_to_timestamp(easyav1, timestamp);
 }
 
 easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
@@ -3248,11 +3254,15 @@ easyav1_status easyav1_seek_backward(easyav1_t *easyav1, easyav1_timestamp time)
         return EASYAV1_STATUS_ERROR;
     }
 
-    if (time > easyav1->position) {
-        time = easyav1->position;
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
+    easyav1_timestamp position = easyav1->position;
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
+
+    if (time > position) {
+        time = position;
     }
 
-    return easyav1_seek_to_timestamp(easyav1, easyav1->position - time);
+    return easyav1_seek_to_timestamp(easyav1, position - time);
 }
 
 
@@ -3271,13 +3281,21 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1)
         return EASYAV1_FALSE;
     }
 
+    pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.info);
+
+    easyav1_timestamp timestamp = easyav1->position;
+
+    pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.info);
+
     pthread_mutex_lock(&easyav1->video.decoder_thread.mutexes.io);
 
     Dav1dPicture *pic = get_oldest_video_frame_from_queue(easyav1);
 
+    easyav1_bool has_frame = (pic != NULL) && (pic->m.timestamp <= timestamp);
+
     pthread_mutex_unlock(&easyav1->video.decoder_thread.mutexes.io);
 
-    return pic == NULL || pic->m.timestamp > easyav1->position ? EASYAV1_FALSE : EASYAV1_TRUE;
+    return has_frame;
 }
 
 static easyav1_bool update_frame_picture_type(easyav1_t *easyav1, easyav1_video_frame *frame, Dav1dSequenceHeader *sqhdr)
