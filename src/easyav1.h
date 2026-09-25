@@ -38,8 +38,9 @@
  *             // Do something with the video frame.
  *         }
  *
- *         if (easyav1_is_audio_buffer_filled(easyav1) == EASYAV1_TRUE) {
- *             const easyav1_audio_frame *audio_frame = easyav1_get_audio_frame(easyav1);
+ *         // Audio: drain whatever samples are ready (don't wait for a "filled" buffer).
+ *         const easyav1_audio_frame *audio_frame;
+ *         while ((audio_frame = easyav1_get_audio_frame(easyav1)) != NULL) {
  *             // Do something with the audio frame.
  *         }
  *     }
@@ -554,8 +555,11 @@ easyav1_status easyav1_decode_for(easyav1_t *easyav1, easyav1_timestamp time);
  * 
  * @note This function runs on its own thread, so you must ensure that the callbacks are thread-safe.
  *
- * @note If you wish to seek while playing, you should pause the playback by calling `easyav1_stop` and then call
- *       `easyav1_seek_to_timestamp` or `easyav1_seek_forward`/`easyav1_seek_backward`.
+ * @note You can seek while playing by calling `easyav1_seek_to_timestamp` (or
+ *       `easyav1_seek_forward`/`easyav1_seek_backward`) directly — the playback thread performs
+ *       the seek after its current decode step and continues playing from the new position.
+ *       There is no need to call `easyav1_stop` first. Do not call seek functions (or any other
+ *       easyAV1 functions) from inside a callback.
  *
  * @param easyav1 The easyav1 instance.
  *
@@ -739,7 +743,7 @@ easyav1_bool easyav1_has_video_frame(easyav1_t *easyav1);
 
 
 /**
- * @brief Gets the current video frame, is one is available.
+ * @brief Gets the current video frame, if one is available.
  *
  * The returned frame is only valid until the next call to `easyav1_get_video_frame`.
  * Calling this function will mark the frame as displayed, so you will only receive a decoded frame once.
@@ -762,11 +766,25 @@ uint64_t easyav1_get_total_video_frames_processed(easyav1_t *easyav1);
 
 
 /**
- * @brief Indicates whether the audio buffer is filled.
+ * @brief Indicates whether the audio sample ring is completely full.
+ *
+ * "Filled" means the ring (4096 samples per channel) has no free space left: the next audio
+ * decode will discard the oldest unprocessed samples to make room. So `EASYAV1_TRUE` is a
+ * *warning* ("consume now or lose samples"), not a "ready to consume" signal. Waiting for
+ * fullness before consuming costs up to a full buffer of latency and, in background playback,
+ * continuous sample loss.
+ *
+ * Prefer draining `easyav1_get_audio_frame` (consume whatever is in the ring, even a few
+ * samples) over waiting for the buffer to fill.
+ *
+ * @note Known design issue: the audio buffer API is expected to change in a future release to
+ * be drain-friendly and thread-safe. In background playback (`easyav1_play`), the audio
+ * callback is the safe delivery path — the audio path is not synchronized, so polling it from
+ * another thread is a data race.
  *
  * @param easyav1 The easyav1 instance.
  *
- * @return `EASYAV1_TRUE` if the audio buffer is filled, `EASYAV1_FALSE` otherwise.
+ * @return `EASYAV1_TRUE` if the audio buffer is completely full, `EASYAV1_FALSE` otherwise.
  */
 easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1);
 
@@ -774,8 +792,21 @@ easyav1_bool easyav1_is_audio_buffer_filled(const easyav1_t *easyav1);
 /**
  * @brief Gets the current audio frame, if there are available samples.
  *
- * The frame is only valid until the next call to `easyav1_decode_next` or `easyav1_decode_until`.
- * Calling this function will mark all the samples in the frame as played, so you will only receive the samples once.
+ * The frame contains whatever samples are currently in the ring (even a few); see the
+ * `samples` and `bytes` fields for how much.
+ *
+ * The samples are *not* committed when you get the frame: the next audio decode (any
+ * `easyav1_decode_*` call, or the playback thread's next decode in background playback) can
+ * overwrite them in place and rewrite the frame's `samples`/`timestamp`/`bytes` fields.
+ * Consume the frame before the next decode — or copy the samples if you need to keep them.
+ *
+ * Calling this function will mark the samples in the frame as consumed, so you will only
+ * receive them once.
+ *
+ * @note Known design issue: the audio buffer API is expected to change in a future release to
+ * be drain-friendly and thread-safe. In background playback (`easyav1_play`), the audio
+ * callback is the safe delivery path — the audio path is not synchronized, so polling it from
+ * another thread is a data race.
  *
  * @param easyav1 The easyav1 instance.
  *
